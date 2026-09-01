@@ -78,7 +78,7 @@ flowchart TB
 
 - **Axum** parses JSON, extracts `x-party-id`, sends a command, maps errors to HTTP. No ledger I/O in handlers.
 - **Engine actor** owns all requests and serializes mutations so accept versus expiry cannot race.
-- **Matching** is a pure function: eligible live quotes with `size >= notional` and `expires_at > now`; `BuyYes` takes the lowest price, `SellYes` the highest; ties break on earlier `submitted_at`.
+- **Matching** is a pure function: eligible live quotes with `size >= notional` and `expires_at >= accept_deadline` (so the quote survives the whole accept window); `BuyYes` takes the lowest price, `SellYes` the highest; ties break on lowest `seq`, the engine-assigned submit order.
 - **Ledger / Oracle / Clock** are traits with in-memory mocks.
 
 ### HTTP surface

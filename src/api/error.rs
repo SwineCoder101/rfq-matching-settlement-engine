@@ -11,6 +11,12 @@ pub struct ErrorBody {
     pub message: String,
 }
 
+impl ErrorBody {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+}
+
 /// What a handler returns on failure. `(StatusCode, Json<T>)` already implements
 /// `axum::response::IntoResponse`.
 pub type ErrorResponse = (StatusCode, Json<ErrorBody>);
@@ -21,6 +27,7 @@ impl From<EngineError> for (StatusCode, Json<ErrorBody>) {
             EngineError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             EngineError::NotOwner => (StatusCode::FORBIDDEN, "not_owner"),
             EngineError::WrongState { .. } => (StatusCode::CONFLICT, "wrong_state"),
+            EngineError::QuoteNotLive => (StatusCode::CONFLICT, "quote_not_live"),
             EngineError::InsufficientFunds { .. } => {
                 (StatusCode::PAYMENT_REQUIRED, "insufficient_funds")
             }
@@ -31,6 +38,8 @@ impl From<EngineError> for (StatusCode, Json<ErrorBody>) {
             }
             EngineError::InvalidPrice => (StatusCode::BAD_REQUEST, "invalid_price"),
             EngineError::DeadlineInPast => (StatusCode::BAD_REQUEST, "deadline_in_past"),
+            EngineError::EmptyLegs => (StatusCode::BAD_REQUEST, "empty_legs"),
+            EngineError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "engine_unavailable"),
         };
         (status, Json(ErrorBody { code, message: e.to_string() }))
     }
@@ -94,6 +103,8 @@ mod tests {
             }),
             StatusCode::CONFLICT
         );
+        assert_eq!(status(EngineError::QuoteNotLive), StatusCode::CONFLICT);
+        assert_eq!(status(EngineError::Unavailable), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             status(EngineError::InsufficientFunds {
                 party: PartyId::new(),
@@ -108,6 +119,7 @@ mod tests {
             EngineError::QuoteExpiresBeforeAcceptWindow,
             EngineError::InvalidPrice,
             EngineError::DeadlineInPast,
+            EngineError::EmptyLegs,
         ] {
             assert_eq!(status(e.clone()), StatusCode::BAD_REQUEST, "{e:?}");
         }

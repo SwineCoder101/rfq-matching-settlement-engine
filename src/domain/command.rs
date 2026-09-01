@@ -6,7 +6,7 @@ use tokio::sync::oneshot;
 use super::ids::{LegId, PartyId, QuoteId, RequestId};
 use super::money::{Amount, Price};
 use super::ports::InsufficientFunds;
-use super::request::Leg;
+use super::request::{LedgerAccount, Leg, Quote, RfqRequest};
 use super::state::{OracleOutcome, RequestState};
 
 /// One-shot reply channel from the engine actor back to the caller.
@@ -14,16 +14,19 @@ pub type Reply<T> = oneshot::Sender<Result<T, EngineError>>;
 
 /// Everything the engine actor can be asked to do. Handlers and the expiry worker send these;
 /// the actor applies them one at a time so accept and expiry cannot race.
+///
+/// Mutating commands reply with a snapshot of the affected aggregate so handlers can render
+/// the response without a second round trip.
 #[derive(Debug)]
 pub enum Command {
-    /// Requester opens an RFQ. Replies with the new request id.
+    /// Requester opens an RFQ.
     SubmitRequest {
         requester: PartyId,
         legs: Vec<Leg>,
         response_deadline: DateTime<Utc>,
-        reply: Reply<RequestId>,
+        reply: Reply<RfqRequest>,
     },
-    /// Market maker quotes a leg. Reserves collateral. Replies with the new quote id.
+    /// Market maker quotes a leg. Reserves collateral.
     SubmitQuote {
         maker: PartyId,
         request_id: RequestId,
@@ -31,7 +34,7 @@ pub enum Command {
         price: Price,
         size: Amount,
         expires_at: DateTime<Utc>,
-        reply: Reply<QuoteId>,
+        reply: Reply<Quote>,
     },
     /// Market maker cancels their own live quote while the request is still `Open`.
     CancelQuote {
@@ -39,24 +42,39 @@ pub enum Command {
         quote_id: QuoteId,
         reply: Reply<()>,
     },
-    /// Requester accepts the presented package. Replies with the resulting state (`Locked`).
+    /// Requester accepts the presented package (`Presented → Locked`).
     Accept {
         requester: PartyId,
         request_id: RequestId,
-        reply: Reply<RequestState>,
+        reply: Reply<RfqRequest>,
     },
-    /// Requester rejects the presented package. Replies with the resulting state (`Failed`).
+    /// Requester rejects the presented package (`Presented → Failed`).
     Reject {
         requester: PartyId,
         request_id: RequestId,
-        reply: Reply<RequestState>,
+        reply: Reply<RfqRequest>,
     },
-    /// Oracle operator reports an outcome. Replies with the resulting state
-    /// (`Settled`, `Disputed`, or `Unwound`).
+    /// Oracle operator reports an outcome (`Locked | Disputed → Settled | Disputed | Unwound`).
     Resolve {
         request_id: RequestId,
         outcome: OracleOutcome,
-        reply: Reply<RequestState>,
+        reply: Reply<RfqRequest>,
+    },
+    /// Read a request snapshot.
+    GetRequest {
+        request_id: RequestId,
+        reply: Reply<RfqRequest>,
+    },
+    /// Mock faucet. Lives in the actor so handlers never touch the ledger directly.
+    Credit {
+        party: PartyId,
+        amount: Amount,
+        reply: Reply<LedgerAccount>,
+    },
+    /// Read a party's balances.
+    Balance {
+        party: PartyId,
+        reply: Reply<LedgerAccount>,
     },
     /// Expiry worker heartbeat. Deadlines are absolute; `now` is carried, never read.
     Tick { now: DateTime<Utc> },
@@ -74,6 +92,8 @@ pub enum EngineError {
         expected: RequestState,
         actual: RequestState,
     },
+    #[error("quote is no longer live")]
+    QuoteNotLive,
     #[error("quote has expired")]
     QuoteExpired,
     #[error("quote size is smaller than the leg notional")]
@@ -90,6 +110,10 @@ pub enum EngineError {
     },
     #[error("deadline is in the past")]
     DeadlineInPast,
+    #[error("a request must have at least one leg")]
+    EmptyLegs,
+    #[error("engine is not running")]
+    Unavailable,
 }
 
 impl From<InsufficientFunds> for EngineError {
@@ -105,5 +129,11 @@ impl From<InsufficientFunds> for EngineError {
 impl From<super::money::InvalidPrice> for EngineError {
     fn from(_: super::money::InvalidPrice) -> Self {
         EngineError::InvalidPrice
+    }
+}
+
+impl From<super::request::EmptyLegs> for EngineError {
+    fn from(_: super::request::EmptyLegs) -> Self {
+        EngineError::EmptyLegs
     }
 }
