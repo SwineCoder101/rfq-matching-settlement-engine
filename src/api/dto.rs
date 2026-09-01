@@ -22,6 +22,8 @@ use crate::domain::{LegId, PartyId, QuoteId, RequestId};
 pub enum LegSideDto {
     BuyYes,
     SellYes,
+    BuyNo,
+    SellNo,
 }
 
 impl From<LegSideDto> for LegSide {
@@ -29,6 +31,8 @@ impl From<LegSideDto> for LegSide {
         match s {
             LegSideDto::BuyYes => LegSide::BuyYes,
             LegSideDto::SellYes => LegSide::SellYes,
+            LegSideDto::BuyNo => LegSide::BuyNo,
+            LegSideDto::SellNo => LegSide::SellNo,
         }
     }
 }
@@ -319,6 +323,20 @@ mod tests {
         assert_eq!(leg.description.as_str(), "BTC closes above $100k on 2026-12-31");
         assert_eq!(leg.side, LegSide::BuyYes);
         assert_eq!(leg.notional, Amount::new(1_000));
+    }
+
+    #[test]
+    fn all_four_sides_parse_and_round_trip() {
+        for (wire, side) in [
+            ("buy_yes", LegSide::BuyYes),
+            ("sell_yes", LegSide::SellYes),
+            ("buy_no", LegSide::BuyNo),
+            ("sell_no", LegSide::SellNo),
+        ] {
+            let dto: LegSideDto = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(LegSide::from(dto), side);
+            assert_eq!(serde_json::to_value(side).unwrap(), wire, "domain side serializes identically");
+        }
     }
 
     #[test]

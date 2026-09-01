@@ -1,0 +1,6 @@
+{
+  "legs": [
+    { "contract": "R", "description": "Rate cut announced before 2026-12-31", "side": "buy_no", "notional": 1000 }
+  ],
+  "response_deadline": "{{response_deadline}}"
+}

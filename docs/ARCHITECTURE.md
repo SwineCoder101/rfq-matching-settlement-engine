@@ -25,7 +25,7 @@ flowchart TB
 ```
 
 - **Request** — aggregate root. Owns legs, quotes, deadlines, and `RequestState`.
-- **Leg** — one binary contract (id plus a free-text description the engine never interprets), side (`BuyYes` / `SellYes`), and notional. Not an order.
+- **Leg** — one binary contract (id plus a free-text description the engine never interprets), side (`BuyYes` / `SellYes` / `BuyNo` / `SellNo`), and notional. Not an order. Buying No at `1 - p` is selling Yes at `p`: prices, collateral, and escrow are always expressed in Yes terms, so `BuyYes` and `SellNo` make the requester the Yes-buyer, `SellYes` and `BuyNo` make the maker the Yes-buyer.
 - **Quote** — market-maker price, size, and expiry. Reserves MM collateral while `Live` or `Selected`.
 - **Escrow** — exists only after accept. Yes-buyer locked `p * n`, Yes-seller locked `(1 - p) * n`, total `n`.
 
@@ -78,7 +78,7 @@ flowchart TB
 
 - **Axum** parses JSON, extracts `x-party-id`, sends a command, maps errors to HTTP. No ledger I/O in handlers.
 - **Engine actor** owns all requests and serializes mutations so accept versus expiry cannot race.
-- **Matching** is a pure function: eligible live quotes with `size >= notional` and `expires_at >= accept_deadline` (so the quote survives the whole accept window); `BuyYes` takes the lowest price, `SellYes` the highest; ties break on lowest `seq`, the engine-assigned submit order.
+- **Matching** is a pure function: eligible live quotes with `size >= notional` and `expires_at >= accept_deadline` (so the quote survives the whole accept window); legs where the requester ends up long Yes (`BuyYes`, `SellNo`) take the lowest Yes price, legs where the requester ends up short Yes (`SellYes`, `BuyNo`) the highest; ties break on lowest `seq`, the engine-assigned submit order.
 - **Ledger / Oracle / Clock** are traits with in-memory mocks.
 
 ### HTTP surface

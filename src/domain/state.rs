@@ -5,17 +5,26 @@ use serde::Serialize;
 use super::ids::LegId;
 
 /// Which side of the binary contract the *requester* wants on a leg.
+///
+/// A binary contract has two economically identical ways to express each position:
+/// buying No at `1 - p` is selling Yes at `p`. Prices, collateral, and escrow are always
+/// expressed in Yes terms, so the four sides collapse onto [`LegSide::requester_buys_yes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LegSide {
     BuyYes,
     SellYes,
+    BuyNo,
+    SellNo,
 }
 
 impl LegSide {
-    /// `BuyYes` → the requester is the Yes-buyer; `SellYes` → the maker is the Yes-buyer.
+    pub const ALL: [LegSide; 4] = [LegSide::BuyYes, LegSide::SellYes, LegSide::BuyNo, LegSide::SellNo];
+
+    /// Does the requester end up long Yes? `BuyYes` and `SellNo` → yes, the requester is the
+    /// Yes-buyer; `SellYes` and `BuyNo` → no, the maker is the Yes-buyer.
     pub const fn requester_buys_yes(self) -> bool {
-        matches!(self, LegSide::BuyYes)
+        matches!(self, LegSide::BuyYes | LegSide::SellNo)
     }
 }
 
@@ -92,7 +101,15 @@ mod tests {
     #[test]
     fn leg_side_role() {
         assert!(LegSide::BuyYes.requester_buys_yes());
+        assert!(LegSide::SellNo.requester_buys_yes());
         assert!(!LegSide::SellYes.requester_buys_yes());
+        assert!(!LegSide::BuyNo.requester_buys_yes());
+    }
+
+    #[test]
+    fn leg_side_serializes_snake_case() {
+        let names: Vec<_> = LegSide::ALL.iter().map(|s| serde_json::to_value(s).unwrap()).collect();
+        assert_eq!(names, ["buy_yes", "sell_yes", "buy_no", "sell_no"]);
     }
 
     #[test]

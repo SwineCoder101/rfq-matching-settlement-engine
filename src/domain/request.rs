@@ -299,6 +299,14 @@ mod tests {
         let e = Escrow::new(rid, &sell, price, requester, maker);
         assert_eq!((e.yes_buyer, e.yes_seller), (maker, requester));
         assert_eq!(e.yes_buyer_amount + e.yes_seller_amount, e.notional);
+
+        // Buying No is selling Yes; selling No is buying Yes. Same escrow either way.
+        let buy_no = Escrow::new(rid, &leg(LegSide::BuyNo, 10_000), price, requester, maker);
+        assert_eq!((buy_no.yes_buyer, buy_no.yes_seller), (maker, requester));
+        assert_eq!(buy_no.yes_seller_amount, Amount::new(7_000), "requester locks (1 - p) * n");
+        let sell_no = Escrow::new(rid, &leg(LegSide::SellNo, 10_000), price, requester, maker);
+        assert_eq!((sell_no.yes_buyer, sell_no.yes_seller), (requester, maker));
+        assert_eq!(sell_no.yes_buyer_amount, Amount::new(3_000), "requester locks p * n");
     }
 
     #[test]
@@ -319,6 +327,12 @@ mod tests {
         assert_eq!(q.maker_lock(&sell), Amount::new(3_000));
         let e = Escrow::new(rid, &sell, q.price, requester, q.maker);
         assert_eq!(q.maker_lock(&sell), e.yes_buyer_amount);
+
+        // BuyNo: MM sells No == buys Yes, locks p * n. SellNo: MM buys No == sells Yes.
+        let buy_no = leg(LegSide::BuyNo, 10_000);
+        assert_eq!(quote(&buy_no, 3_000).maker_lock(&buy_no), Amount::new(3_000));
+        let sell_no = leg(LegSide::SellNo, 10_000);
+        assert_eq!(quote(&sell_no, 3_000).maker_lock(&sell_no), Amount::new(7_000));
 
         // Odd notional: MM lock + requester lock still == notional.
         let odd = leg(LegSide::BuyYes, 7);
