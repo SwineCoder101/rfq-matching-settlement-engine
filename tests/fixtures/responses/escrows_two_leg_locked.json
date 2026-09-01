@@ -1,0 +1,18 @@
+[
+  {
+    "leg_id": "{{leg_a}}",
+    "yes_buyer": "{{requester}}",
+    "yes_seller": "{{maker}}",
+    "yes_buyer_amount": 350,
+    "yes_seller_amount": 650,
+    "notional": 1000
+  },
+  {
+    "leg_id": "{{leg_b}}",
+    "yes_buyer": "{{maker}}",
+    "yes_seller": "{{requester}}",
+    "yes_buyer_amount": 1300,
+    "yes_seller_amount": 700,
+    "notional": 2000
+  }
+]

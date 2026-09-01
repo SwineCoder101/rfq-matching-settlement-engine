@@ -1,0 +1,13 @@
+{
+  "id": "{{id}}",
+  "requester": "{{requester}}",
+  "state": "open",
+  "legs": [
+    { "id": "{{leg_a}}", "contract": "A", "description": "A resolves Yes by 2026-12-31", "side": "buy_yes",  "notional": 1000 },
+    { "id": "{{leg_b}}", "contract": "B", "description": "B resolves Yes by 2026-12-31", "side": "sell_yes", "notional": 2000 }
+  ],
+  "quotes": [],
+  "escrows": [],
+  "response_deadline": "{{response_deadline}}",
+  "created_at": "{{created_at}}"
+}

@@ -29,6 +29,11 @@ impl MockClock {
         *self.now.lock().unwrap_or_else(PoisonError::into_inner) = now;
     }
 
+    /// Current value without going through the [`Clock`] trait.
+    pub fn now_value(&self) -> DateTime<Utc> {
+        *self.now.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn advance(&self, by: Duration) {
         let mut now = self.now.lock().unwrap_or_else(PoisonError::into_inner);
         *now += by;
@@ -37,7 +42,7 @@ impl MockClock {
 
 impl Clock for MockClock {
     fn now(&self) -> DateTime<Utc> {
-        *self.now.lock().unwrap_or_else(PoisonError::into_inner)
+        self.now_value()
     }
 }
 

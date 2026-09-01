@@ -1,0 +1,6 @@
+{
+  "selections": [
+    { "leg_id": "{{leg_a}}", "quote_id": "{{quote_a}}" },
+    { "leg_id": "{{leg_b}}", "quote_id": "{{quote_b}}" }
+  ]
+}

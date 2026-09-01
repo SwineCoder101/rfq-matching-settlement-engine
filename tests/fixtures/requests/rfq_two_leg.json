@@ -1,0 +1,7 @@
+{
+  "legs": [
+    { "contract": "A", "description": "A resolves Yes by 2026-12-31", "side": "buy_yes",  "notional": 1000 },
+    { "contract": "B", "description": "B resolves Yes by 2026-12-31", "side": "sell_yes", "notional": 2000 }
+  ],
+  "response_deadline": "{{response_deadline}}"
+}

@@ -1,0 +1,8 @@
+{
+  "legs": [
+    { "contract": "A", "description": "A", "side": "buy_yes", "notional": 1000 },
+    { "contract": "B", "description": "B", "side": "buy_yes", "notional": 1000 },
+    { "contract": "C", "description": "C", "side": "buy_yes", "notional": 1000 }
+  ],
+  "response_deadline": "{{response_deadline}}"
+}
