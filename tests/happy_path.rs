@@ -148,8 +148,8 @@ async fn full_lifecycle_two_legs_settles_yes() {
             Some(requester),
             Some(json!({
                 "legs": [
-                    { "contract": "A", "side": "buy_yes",  "notional": 1_000 },
-                    { "contract": "B", "side": "sell_yes", "notional": 2_000 }
+                    { "contract": "A", "description": "A resolves Yes by 2026-12-31", "side": "buy_yes",  "notional": 1_000 },
+                    { "contract": "B", "description": "B resolves Yes by 2026-12-31", "side": "sell_yes", "notional": 2_000 }
                 ],
                 "response_deadline": response_deadline
             })),
@@ -158,6 +158,7 @@ async fn full_lifecycle_two_legs_settles_yes() {
     assert_eq!(status, StatusCode::CREATED, "{req}");
     assert_eq!(req["state"], "open");
     assert_eq!(req["requester"], requester.to_string());
+    assert_eq!(req["legs"][0]["description"], "A resolves Yes by 2026-12-31");
     assert!(req.get("package").is_none());
     let request_id = req["id"].as_str().unwrap().to_owned();
     let leg_a = req["legs"][0]["id"].as_str().unwrap().to_owned();
@@ -279,9 +280,9 @@ async fn unmatched_leg_fails_request_and_releases_every_reservation() {
             Some(requester),
             Some(json!({
                 "legs": [
-                    { "contract": "A", "side": "buy_yes", "notional": 1_000 },
-                    { "contract": "B", "side": "buy_yes", "notional": 1_000 },
-                    { "contract": "C", "side": "buy_yes", "notional": 1_000 }
+                    { "contract": "A", "description": "A", "side": "buy_yes", "notional": 1_000 },
+                    { "contract": "B", "description": "B", "side": "buy_yes", "notional": 1_000 },
+                    { "contract": "C", "description": "C", "side": "buy_yes", "notional": 1_000 }
                 ],
                 "response_deadline": v.at(30)
             })),

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::error::ApiError;
 use crate::domain::{
-    Amount, ContractId, Escrow, FailReason, LedgerAccount, Leg, LegSide, OracleOutcome, Package,
+    Amount, ContractDescription, ContractId, Escrow, FailReason, LedgerAccount, Leg, LegSide, OracleOutcome, Package,
     Price, Quote, QuoteState, RequestState, RfqRequest,
 };
 use crate::domain::{LegId, PartyId, QuoteId, RequestId};
@@ -77,6 +77,8 @@ impl TryFrom<CreditBody> for (PartyId, Amount) {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct LegBody {
     pub contract: String,
+    /// What the contract resolves on. Required, non-blank, at most 1000 characters.
+    pub description: String,
     pub side: LegSideDto,
     /// Minor units.
     pub notional: u64,
@@ -87,7 +89,8 @@ impl TryFrom<LegBody> for Leg {
 
     fn try_from(b: LegBody) -> Result<Self, Self::Error> {
         let contract = ContractId::try_from(b.contract)?;
-        Ok(Leg::new(contract, b.side.into(), Amount::new(b.notional))?)
+        let description = ContractDescription::try_from(b.description)?;
+        Ok(Leg::new(contract, description, b.side.into(), Amount::new(b.notional))?)
     }
 }
 
@@ -169,13 +172,20 @@ impl From<(PartyId, LedgerAccount)> for BalanceView {
 pub struct LegView {
     pub id: LegId,
     pub contract: ContractId,
+    pub description: ContractDescription,
     pub side: LegSide,
     pub notional: Amount,
 }
 
 impl From<&Leg> for LegView {
     fn from(l: &Leg) -> Self {
-        Self { id: l.id, contract: l.contract.clone(), side: l.side, notional: l.notional }
+        Self {
+            id: l.id,
+            contract: l.contract.clone(),
+            description: l.description.clone(),
+            side: l.side,
+            notional: l.notional,
+        }
     }
 }
 
@@ -300,20 +310,34 @@ mod tests {
     #[test]
     fn leg_body_parses_into_domain_leg() {
         let body: LegBody =
-            serde_json::from_str(r#"{"contract":"BTC-100K","side":"buy_yes","notional":1000}"#)
-                .unwrap();
+            serde_json::from_str(
+                r#"{"contract":"BTC-100K","description":"BTC closes above $100k on 2026-12-31","side":"buy_yes","notional":1000}"#,
+            )
+            .unwrap();
         let leg = Leg::try_from(body).unwrap();
         assert_eq!(leg.contract.as_str(), "BTC-100K");
+        assert_eq!(leg.description.as_str(), "BTC closes above $100k on 2026-12-31");
         assert_eq!(leg.side, LegSide::BuyYes);
         assert_eq!(leg.notional, Amount::new(1_000));
     }
 
     #[test]
     fn leg_body_rejects_bad_input() {
-        let zero = LegBody { contract: "C".into(), side: LegSideDto::SellYes, notional: 0 };
-        assert!(matches!(Leg::try_from(zero), Err(ApiError::ZeroNotional(_))));
-        let blank = LegBody { contract: " ".into(), side: LegSideDto::SellYes, notional: 1 };
-        assert!(matches!(Leg::try_from(blank), Err(ApiError::InvalidContractId(_))));
+        let leg = |contract: &str, description: &str, notional: u64| LegBody {
+            contract: contract.into(),
+            description: description.into(),
+            side: LegSideDto::SellYes,
+            notional,
+        };
+        assert!(matches!(Leg::try_from(leg("C", "d", 0)), Err(ApiError::ZeroNotional(_))));
+        assert!(matches!(Leg::try_from(leg(" ", "d", 1)), Err(ApiError::InvalidContractId(_))));
+        assert!(matches!(
+            Leg::try_from(leg("C", "  ", 1)),
+            Err(ApiError::InvalidContractDescription(_))
+        ));
+        let body: Result<LegBody, _> =
+            serde_json::from_str(r#"{"contract":"C","side":"buy_yes","notional":1}"#);
+        assert!(body.is_err(), "description is required on the wire");
     }
 
     #[test]
@@ -363,11 +387,18 @@ mod tests {
 
     #[test]
     fn request_view_serializes_domain_aggregate() {
-        let leg = Leg::new(ContractId::new("C").unwrap(), LegSide::BuyYes, Amount::new(500)).unwrap();
+        let leg = Leg::new(
+            ContractId::new("C").unwrap(),
+            ContractDescription::new("C resolves Yes").unwrap(),
+            LegSide::BuyYes,
+            Amount::new(500),
+        )
+        .unwrap();
         let req = RfqRequest::open(RequestId::new(), PartyId::new(), vec![leg], t(10), t(0)).unwrap();
         let json = serde_json::to_value(RequestView::from(&req)).unwrap();
         assert_eq!(json["state"], "open");
         assert_eq!(json["legs"][0]["side"], "buy_yes");
+        assert_eq!(json["legs"][0]["description"], "C resolves Yes");
         assert_eq!(json["legs"][0]["notional"], 500);
         assert!(json.get("package").is_none(), "absent package is omitted");
         assert!(json.get("fail_reason").is_none());

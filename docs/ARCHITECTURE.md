@@ -25,7 +25,7 @@ flowchart TB
 ```
 
 - **Request** — aggregate root. Owns legs, quotes, deadlines, and `RequestState`.
-- **Leg** — one binary contract, side (`BuyYes` / `SellYes`), and notional. Not an order.
+- **Leg** — one binary contract (id plus a free-text description the engine never interprets), side (`BuyYes` / `SellYes`), and notional. Not an order.
 - **Quote** — market-maker price, size, and expiry. Reserves MM collateral while `Live` or `Selected`.
 - **Escrow** — exists only after accept. Yes-buyer locked `p * n`, Yes-seller locked `(1 - p) * n`, total `n`.
 

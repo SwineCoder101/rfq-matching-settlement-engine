@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 
-use super::ids::{ContractId, LegId, PartyId, QuoteId, RequestId, Seq};
+use super::ids::{ContractDescription, ContractId, LegId, PartyId, QuoteId, RequestId, Seq};
 use super::money::{Amount, Price};
 use super::state::{FailReason, LegSide, QuoteState, RequestState};
 
@@ -21,16 +21,23 @@ pub struct EmptyLegs;
 pub struct Leg {
     pub id: LegId,
     pub contract: ContractId,
+    /// What the contract resolves on. Opaque to the engine.
+    pub description: ContractDescription,
     pub side: LegSide,
     pub notional: Amount,
 }
 
 impl Leg {
-    pub fn new(contract: ContractId, side: LegSide, notional: Amount) -> Result<Self, ZeroNotional> {
+    pub fn new(
+        contract: ContractId,
+        description: ContractDescription,
+        side: LegSide,
+        notional: Amount,
+    ) -> Result<Self, ZeroNotional> {
         if notional.is_zero() {
             return Err(ZeroNotional);
         }
-        Ok(Self { id: LegId::new(), contract, side, notional })
+        Ok(Self { id: LegId::new(), contract, description, side, notional })
     }
 }
 
@@ -214,7 +221,13 @@ mod tests {
     }
 
     fn leg(side: LegSide, notional: u64) -> Leg {
-        Leg::new(ContractId::new("C").unwrap(), side, Amount::new(notional)).unwrap()
+        Leg::new(
+            ContractId::new("C").unwrap(),
+            ContractDescription::new("C resolves Yes").unwrap(),
+            side,
+            Amount::new(notional),
+        )
+        .unwrap()
     }
 
     fn quote(leg: &Leg, bps: u32) -> Quote {
@@ -234,7 +247,12 @@ mod tests {
     #[test]
     fn leg_rejects_zero_notional() {
         assert_eq!(
-            Leg::new(ContractId::new("C").unwrap(), LegSide::BuyYes, Amount::ZERO),
+            Leg::new(
+                ContractId::new("C").unwrap(),
+                ContractDescription::new("C").unwrap(),
+                LegSide::BuyYes,
+                Amount::ZERO
+            ),
             Err(ZeroNotional)
         );
     }

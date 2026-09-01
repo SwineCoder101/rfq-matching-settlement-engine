@@ -39,7 +39,7 @@ pub fn select_best(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Amount, ContractId, LegId, PartyId, Price, Seq};
+    use crate::domain::{Amount, ContractDescription, ContractId, LegId, PartyId, Price, Seq};
 
     fn t(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(secs, 0).unwrap()
@@ -49,7 +49,13 @@ mod tests {
     const ACCEPT_DEADLINE: i64 = 200;
 
     fn leg(side: LegSide) -> Leg {
-        Leg::new(ContractId::new("C").unwrap(), side, Amount::new(1_000)).unwrap()
+        Leg::new(
+            ContractId::new("C").unwrap(),
+            ContractDescription::new("C").unwrap(),
+            side,
+            Amount::new(1_000),
+        )
+        .unwrap()
     }
 
     struct Q {

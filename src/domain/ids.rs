@@ -111,6 +111,56 @@ impl fmt::Display for ContractId {
     }
 }
 
+/// Human-readable statement of what the contract resolves on, e.g.
+/// "BTC closes above $100k on 2026-12-31 (UTC)". Carried for participants and the oracle
+/// operator; the engine never interprets it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ContractDescription(String);
+
+/// Description must be non-blank and at most [`ContractDescription::MAX_CHARS`] characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidContractDescription {
+    #[error("contract description must be non-empty")]
+    Empty,
+    #[error("contract description exceeds {} characters", ContractDescription::MAX_CHARS)]
+    TooLong,
+}
+
+impl ContractDescription {
+    pub const MAX_CHARS: usize = 1_000;
+
+    pub fn new(text: impl Into<String>) -> Result<Self, InvalidContractDescription> {
+        let text = text.into();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err(InvalidContractDescription::Empty);
+        }
+        if trimmed.chars().count() > Self::MAX_CHARS {
+            return Err(InvalidContractDescription::TooLong);
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ContractDescription {
+    type Error = InvalidContractDescription;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl fmt::Display for ContractDescription {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Engine-assigned monotonic sequence number.
 ///
 /// Stamped on every quote by the engine actor at submit time. Because the actor serializes all
@@ -152,6 +202,17 @@ mod tests {
         assert_eq!(ContractId::new(""), Err(InvalidContractId));
         assert_eq!(ContractId::new("   "), Err(InvalidContractId));
         assert_eq!(ContractId::new("BTC-100K-2026").unwrap().as_str(), "BTC-100K-2026");
+    }
+
+    #[test]
+    fn contract_description_is_trimmed_and_bounded() {
+        assert_eq!(ContractDescription::new("  "), Err(InvalidContractDescription::Empty));
+        assert_eq!(
+            ContractDescription::new("x".repeat(ContractDescription::MAX_CHARS + 1)),
+            Err(InvalidContractDescription::TooLong)
+        );
+        assert_eq!(ContractDescription::new("  BTC > 100k  ").unwrap().as_str(), "BTC > 100k");
+        assert!(ContractDescription::new("x".repeat(ContractDescription::MAX_CHARS)).is_ok());
     }
 
     #[test]

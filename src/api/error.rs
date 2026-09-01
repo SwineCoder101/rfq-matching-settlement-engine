@@ -2,7 +2,10 @@ use axum::Json;
 use axum::http::StatusCode;
 use serde::Serialize;
 
-use crate::domain::{EmptyLegs, EngineError, InvalidContractId, InvalidPrice, ZeroNotional};
+use crate::domain::{
+    EmptyLegs, EngineError, InvalidContractDescription, InvalidContractId, InvalidPrice,
+    ZeroNotional,
+};
 
 /// JSON error envelope: `{ "code": "wrong_state", "message": "..." }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -54,6 +57,8 @@ pub enum ApiError {
     #[error(transparent)]
     InvalidContractId(#[from] InvalidContractId),
     #[error(transparent)]
+    InvalidContractDescription(#[from] InvalidContractDescription),
+    #[error(transparent)]
     ZeroNotional(#[from] ZeroNotional),
     #[error(transparent)]
     EmptyLegs(#[from] EmptyLegs),
@@ -68,6 +73,7 @@ impl ApiError {
         match self {
             ApiError::InvalidPrice(_) => "invalid_price",
             ApiError::InvalidContractId(_) => "invalid_contract_id",
+            ApiError::InvalidContractDescription(_) => "invalid_contract_description",
             ApiError::ZeroNotional(_) => "zero_notional",
             ApiError::EmptyLegs(_) => "empty_legs",
             ApiError::ZeroAmount => "zero_amount",

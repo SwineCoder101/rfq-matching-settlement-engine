@@ -10,7 +10,10 @@ pub mod request;
 pub mod state;
 
 pub use command::{Command, EngineError, Reply};
-pub use ids::{ContractId, InvalidContractId, LegId, PartyId, QuoteId, RequestId, Seq};
+pub use ids::{
+    ContractDescription, ContractId, InvalidContractDescription, InvalidContractId, LegId,
+    PartyId, QuoteId, RequestId, Seq,
+};
 pub use matching::select_best;
 pub use money::{Amount, InvalidPrice, Price};
 pub use ports::{
