@@ -1,5 +1,6 @@
 //! Shared harness for HTTP-level tests: an in-process venue with a mock clock and ledger,
 //! typed endpoint helpers, JSON fixtures with `{{placeholder}}` substitution, and assertions.
+#![allow(dead_code)] // each test binary uses a different subset of the harness
 
 use std::path::Path;
 use std::sync::Arc;
@@ -165,6 +166,11 @@ impl Venue {
     /// `POST /v1/requests` with a request fixture; returns the 201 body.
     pub async fn create_request(&self, requester: Uuid, fixture_name: &str, response_deadline: DateTime<Utc>) -> Value {
         let body = fixture(fixture_name, vars!["response_deadline" => ts(response_deadline)]);
+        self.create_request_body(requester, body).await
+    }
+
+    /// `POST /v1/requests` with an arbitrary body; returns the 201 body.
+    pub async fn create_request_body(&self, requester: Uuid, body: Value) -> Value {
         self.expect(StatusCode::CREATED, Method::POST, "/v1/requests", Some(requester), Some(body)).await
     }
 
