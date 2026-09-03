@@ -1,16 +1,17 @@
-//! Permissionless RFQ matching and settlement engine.
+//! Permissionless RFQ matching and settlement engine. See `docs/ARCHITECTURE.md`.
 //!
-//! Layout follows `docs/ARCHITECTURE.md`:
-//! - [`domain`] — aggregates, value types, engine commands, ports (traits), and the pure
-//!   best-quote matching function. No I/O, no serde `Deserialize`.
-//! - [`engine`] — the state machine and the Tokio actor that serializes every mutation.
-//! - [`worker`] — the expiry worker that ticks the engine.
-//! - [`mocks`] — in-memory `Ledger`, `Oracle`, and `Clock` implementations.
-//! - [`api`] — HTTP DTOs, error mapping, `x-party-id` extractor, and the Axum router.
+//! - [`domain`]: value types, aggregates, and their invariants. No I/O.
+//! - [`matching`]: the one pure best-quote function.
+//! - [`engine`]: commands, the request state machine, and the actor that serializes it.
+//! - [`ledger`] / [`clock`]: the ports the engine talks to, with in-memory implementations.
+//! - [`api`]: Axum router, identity extractor, bodies, and error mapping.
+//! - [`worker`]: the expiry worker that ticks the engine.
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod clock;
 pub mod domain;
 pub mod engine;
-pub mod mocks;
+pub mod ledger;
+pub mod matching;
 pub mod worker;

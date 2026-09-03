@@ -1,27 +1,26 @@
-//! Aggregates: `RfqRequest` (root), `Leg`, `Quote`, `Package`, `Escrow`, `LedgerAccount`.
+//! Aggregates: `RfqRequest` (root), `Leg`, `Quote`, `Package`, `Escrow`. These serialize
+//! directly as the API's response bodies.
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 
 use super::ids::{ContractDescription, ContractId, LegId, PartyId, QuoteId, RequestId, Seq};
 use super::money::{Amount, Price};
 use super::state::{FailReason, LegSide, QuoteState, RequestState};
 
-/// A leg's notional must be strictly positive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("leg notional must be greater than zero")]
 pub struct ZeroNotional;
 
-/// A request needs at least one leg.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("a request must have at least one leg")]
 pub struct EmptyLegs;
 
 /// One binary contract, the requester's side, and a notional. Not an order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Leg {
     pub id: LegId,
     pub contract: ContractId,
-    /// What the contract resolves on. Opaque to the engine.
     pub description: ContractDescription,
     pub side: LegSide,
     pub notional: Amount,
@@ -37,33 +36,42 @@ impl Leg {
         if notional.is_zero() {
             return Err(ZeroNotional);
         }
-        Ok(Self { id: LegId::new(), contract, description, side, notional })
+        Ok(Self {
+            id: LegId::new(),
+            contract,
+            description,
+            side,
+            notional,
+        })
     }
 }
 
-/// A market maker's firm quote on one leg. Reserves MM collateral while `Live` or `Selected`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A market maker's firm quote on one leg. Holds a collateral reservation while `Live` or
+/// `Selected`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Quote {
     pub id: QuoteId,
     pub leg_id: LegId,
     pub maker: PartyId,
+    #[serde(rename = "price_bps")]
     pub price: Price,
     pub size: Amount,
     pub expires_at: DateTime<Utc>,
     pub submitted_at: DateTime<Utc>,
-    /// Engine-assigned, monotonic. Tie-breaker in matching.
+    /// Engine-assigned submit order; tie-breaker in matching. Not part of the wire format.
+    #[serde(skip)]
     pub seq: Seq,
     pub state: QuoteState,
 }
 
 impl Quote {
-    /// What the market maker must reserve at submit: the MM's side of the escrow at this
-    /// quote's price for the leg's full notional.
-    ///
-    /// The MM takes the opposite side to the requester, so on a `BuyYes` leg the MM is the
-    /// Yes-seller and on a `SellYes` leg the MM is the Yes-buyer.
+    /// What the maker reserves at submit: its side of the escrow at this price for the leg's
+    /// full notional. The maker takes the side opposite the requester.
     pub fn maker_lock(&self, leg: &Leg) -> Amount {
-        debug_assert_eq!(self.leg_id, leg.id, "maker_lock called with a quote from another leg");
+        debug_assert_eq!(
+            self.leg_id, leg.id,
+            "maker_lock called with a quote from another leg"
+        );
         if leg.side.requester_buys_yes() {
             self.price.yes_seller_lock(leg.notional)
         } else {
@@ -72,25 +80,22 @@ impl Quote {
     }
 }
 
-/// The best quote chosen for one leg.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Selection {
     pub leg_id: LegId,
     pub quote_id: QuoteId,
 }
 
 /// One selection per leg, shown to the requester once the request is `Presented`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Package {
     pub selections: Vec<Selection>,
 }
 
-/// Funds locked for one leg after accept. Exists only from `Locked` onward.
-///
-/// Yes-buyer locks `p * n`, Yes-seller locks `(1 - p) * n`, total `n`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Funds locked for one leg after accept. Yes-buyer locks `p * n`, Yes-seller `(1 - p) * n`,
+/// total `n`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Escrow {
-    pub request_id: RequestId,
     pub leg_id: LegId,
     pub yes_buyer: PartyId,
     pub yes_seller: PartyId,
@@ -100,55 +105,25 @@ pub struct Escrow {
 }
 
 impl Escrow {
-    /// Derive the escrow for `leg` at `price`. `LegSide::BuyYes` → requester buys Yes;
-    /// `LegSide::SellYes` → maker buys Yes.
-    pub fn new(
-        request_id: RequestId,
-        leg: &Leg,
-        price: Price,
-        requester: PartyId,
-        maker: PartyId,
-    ) -> Self {
+    pub fn new(leg: &Leg, price: Price, requester: PartyId, maker: PartyId) -> Self {
         let (yes_buyer, yes_seller) = if leg.side.requester_buys_yes() {
             (requester, maker)
         } else {
             (maker, requester)
         };
-        let yes_buyer_amount = price.yes_buyer_lock(leg.notional);
-        let yes_seller_amount = price.yes_seller_lock(leg.notional);
-        debug_assert_eq!(
-            yes_buyer_amount + yes_seller_amount,
-            leg.notional,
-            "escrow legs must sum to notional"
-        );
         Self {
-            request_id,
             leg_id: leg.id,
             yes_buyer,
             yes_seller,
-            yes_buyer_amount,
-            yes_seller_amount,
+            yes_buyer_amount: price.yes_buyer_lock(leg.notional),
+            yes_seller_amount: price.yes_seller_lock(leg.notional),
             notional: leg.notional,
         }
     }
 }
 
-/// A party's balances. Three buckets, never mixed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LedgerAccount {
-    pub free: Amount,
-    pub reserved: Amount,
-    pub escrowed: Amount,
-}
-
-impl LedgerAccount {
-    pub fn total(self) -> Amount {
-        self.free + self.reserved + self.escrowed
-    }
-}
-
 /// Aggregate root. Owns legs, quotes, deadlines, package, escrows, and `RequestState`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RfqRequest {
     pub id: RequestId,
     pub requester: PartyId,
@@ -157,18 +132,20 @@ pub struct RfqRequest {
     /// Absolute. At this instant the worker either presents a package or fails the request.
     pub response_deadline: DateTime<Utc>,
     /// Set when the request becomes `Presented`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub accept_deadline: Option<DateTime<Utc>>,
     pub state: RequestState,
     /// Set when the request becomes `Presented`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub package: Option<Package>,
     /// Non-empty only from `Locked` onward.
     pub escrows: Vec<Escrow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_reason: Option<FailReason>,
     pub created_at: DateTime<Utc>,
 }
 
 impl RfqRequest {
-    /// A fresh `Open` request with no quotes, package, or escrows.
     pub fn open(
         id: RequestId,
         requester: PartyId,
@@ -204,11 +181,6 @@ impl RfqRequest {
 
     pub fn quote_mut(&mut self, id: QuoteId) -> Option<&mut Quote> {
         self.quotes.iter_mut().find(|q| q.id == id)
-    }
-
-    /// Quotes on `leg_id`, in whatever order they were stored.
-    pub fn quotes_for_leg(&self, leg_id: LegId) -> impl Iterator<Item = &Quote> {
-        self.quotes.iter().filter(move |q| q.leg_id == leg_id)
     }
 }
 
@@ -284,70 +256,103 @@ mod tests {
     fn escrow_roles_follow_leg_side() {
         let requester = PartyId::new();
         let maker = PartyId::new();
-        let rid = RequestId::new();
         let price = Price::new(3_000).unwrap();
 
         let buy = leg(LegSide::BuyYes, 10_000);
-        let e = Escrow::new(rid, &buy, price, requester, maker);
+        let e = Escrow::new(&buy, price, requester, maker);
         assert_eq!((e.yes_buyer, e.yes_seller), (requester, maker));
         assert_eq!(e.yes_buyer_amount, Amount::new(3_000));
         assert_eq!(e.yes_seller_amount, Amount::new(7_000));
         assert_eq!(e.notional, Amount::new(10_000));
-        assert_eq!((e.request_id, e.leg_id), (rid, buy.id));
+        assert_eq!(e.leg_id, buy.id);
 
         let sell = leg(LegSide::SellYes, 10_000);
-        let e = Escrow::new(rid, &sell, price, requester, maker);
+        let e = Escrow::new(&sell, price, requester, maker);
         assert_eq!((e.yes_buyer, e.yes_seller), (maker, requester));
         assert_eq!(e.yes_buyer_amount + e.yes_seller_amount, e.notional);
 
         // Buying No is selling Yes; selling No is buying Yes. Same escrow either way.
-        let buy_no = Escrow::new(rid, &leg(LegSide::BuyNo, 10_000), price, requester, maker);
+        let buy_no = Escrow::new(&leg(LegSide::BuyNo, 10_000), price, requester, maker);
         assert_eq!((buy_no.yes_buyer, buy_no.yes_seller), (maker, requester));
-        assert_eq!(buy_no.yes_seller_amount, Amount::new(7_000), "requester locks (1 - p) * n");
-        let sell_no = Escrow::new(rid, &leg(LegSide::SellNo, 10_000), price, requester, maker);
+        assert_eq!(
+            buy_no.yes_seller_amount,
+            Amount::new(7_000),
+            "requester locks (1 - p) * n"
+        );
+        let sell_no = Escrow::new(&leg(LegSide::SellNo, 10_000), price, requester, maker);
         assert_eq!((sell_no.yes_buyer, sell_no.yes_seller), (requester, maker));
-        assert_eq!(sell_no.yes_buyer_amount, Amount::new(3_000), "requester locks p * n");
+        assert_eq!(
+            sell_no.yes_buyer_amount,
+            Amount::new(3_000),
+            "requester locks p * n"
+        );
     }
 
     #[test]
     fn maker_lock_is_the_mm_side_of_escrow() {
         let requester = PartyId::new();
-        let rid = RequestId::new();
 
         // BuyYes: MM is Yes-seller, locks (1 - p) * n.
         let buy = leg(LegSide::BuyYes, 10_000);
         let q = quote(&buy, 3_000);
         assert_eq!(q.maker_lock(&buy), Amount::new(7_000));
-        let e = Escrow::new(rid, &buy, q.price, requester, q.maker);
-        assert_eq!(q.maker_lock(&buy), e.yes_seller_amount);
+        assert_eq!(
+            q.maker_lock(&buy),
+            Escrow::new(&buy, q.price, requester, q.maker).yes_seller_amount
+        );
 
         // SellYes: MM is Yes-buyer, locks p * n.
         let sell = leg(LegSide::SellYes, 10_000);
         let q = quote(&sell, 3_000);
         assert_eq!(q.maker_lock(&sell), Amount::new(3_000));
-        let e = Escrow::new(rid, &sell, q.price, requester, q.maker);
-        assert_eq!(q.maker_lock(&sell), e.yes_buyer_amount);
+        assert_eq!(
+            q.maker_lock(&sell),
+            Escrow::new(&sell, q.price, requester, q.maker).yes_buyer_amount
+        );
 
         // BuyNo: MM sells No == buys Yes, locks p * n. SellNo: MM buys No == sells Yes.
         let buy_no = leg(LegSide::BuyNo, 10_000);
-        assert_eq!(quote(&buy_no, 3_000).maker_lock(&buy_no), Amount::new(3_000));
+        assert_eq!(
+            quote(&buy_no, 3_000).maker_lock(&buy_no),
+            Amount::new(3_000)
+        );
         let sell_no = leg(LegSide::SellNo, 10_000);
-        assert_eq!(quote(&sell_no, 3_000).maker_lock(&sell_no), Amount::new(7_000));
+        assert_eq!(
+            quote(&sell_no, 3_000).maker_lock(&sell_no),
+            Amount::new(7_000)
+        );
 
         // Odd notional: MM lock + requester lock still == notional.
         let odd = leg(LegSide::BuyYes, 7);
         let q = quote(&odd, 3_333);
-        let requester_side = q.price.yes_buyer_lock(odd.notional);
-        assert_eq!(q.maker_lock(&odd) + requester_side, odd.notional);
+        assert_eq!(
+            q.maker_lock(&odd) + q.price.yes_buyer_lock(odd.notional),
+            odd.notional
+        );
     }
 
     #[test]
-    fn ledger_account_total() {
-        let a = LedgerAccount {
-            free: Amount::new(1),
-            reserved: Amount::new(2),
-            escrowed: Amount::new(3),
-        };
-        assert_eq!(a.total(), Amount::new(6));
+    fn request_serializes_as_the_wire_shape() {
+        let req = RfqRequest::open(
+            RequestId::new(),
+            PartyId::new(),
+            vec![leg(LegSide::BuyYes, 500)],
+            t(10),
+            t(0),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["state"], "open");
+        assert_eq!(json["legs"][0]["side"], "buy_yes");
+        assert_eq!(json["legs"][0]["description"], "C resolves Yes");
+        assert_eq!(json["legs"][0]["notional"], 500);
+        assert!(json.get("package").is_none(), "absent package is omitted");
+        assert!(json.get("accept_deadline").is_none());
+        assert!(json.get("fail_reason").is_none());
+
+        let q = quote(&req.legs[0], 2_500);
+        let json = serde_json::to_value(&q).unwrap();
+        assert_eq!(json["price_bps"], 2_500);
+        assert!(json.get("seq").is_none(), "seq is internal");
     }
 }

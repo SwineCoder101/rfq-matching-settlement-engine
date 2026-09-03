@@ -1,10 +1,13 @@
+//! Time source, so deadlines can be tested deterministically.
+
 use std::sync::{Mutex, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::domain::Clock;
+pub trait Clock {
+    fn now(&self) -> DateTime<Utc>;
+}
 
-/// Wall clock.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemClock;
 
@@ -14,7 +17,7 @@ impl Clock for SystemClock {
     }
 }
 
-/// A clock that only moves when told to. Tests drive deadlines with `set` / `advance`.
+/// A clock that only moves when told to.
 #[derive(Debug)]
 pub struct MockClock {
     now: Mutex<DateTime<Utc>>,
@@ -22,27 +25,23 @@ pub struct MockClock {
 
 impl MockClock {
     pub fn new(start: DateTime<Utc>) -> Self {
-        Self { now: Mutex::new(start) }
+        Self {
+            now: Mutex::new(start),
+        }
     }
 
     pub fn set(&self, now: DateTime<Utc>) {
         *self.now.lock().unwrap_or_else(PoisonError::into_inner) = now;
     }
 
-    /// Current value without going through the [`Clock`] trait.
-    pub fn now_value(&self) -> DateTime<Utc> {
-        *self.now.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     pub fn advance(&self, by: Duration) {
-        let mut now = self.now.lock().unwrap_or_else(PoisonError::into_inner);
-        *now += by;
+        *self.now.lock().unwrap_or_else(PoisonError::into_inner) += by;
     }
 }
 
 impl Clock for MockClock {
     fn now(&self) -> DateTime<Utc> {
-        self.now_value()
+        *self.now.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

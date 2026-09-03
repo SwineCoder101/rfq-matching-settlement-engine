@@ -1,10 +1,8 @@
 # Permissionless RFQ matching and settlement
 
-A requester publishes a quote request (contract, notional, deadline). Market makers answer with firm quotes (price, size, their own expiry). The venue selects the best quote per leg, the requester accepts or rejects a package, both sides lock into escrow, and a mocked oracle pays the winner of a binary contract.
+A requester publishes a quote request (legs, deadline). Market makers answer with firm, collateralized quotes. At the response deadline the venue selects the best quote per leg and presents a package; the requester accepts or rejects it; on accept both sides lock into escrow in one batch; a mocked oracle outcome pays the winner.
 
-Pricing is not this system's problem. Capital is: every intermediate state holds real money, and every participant is adversarial.
-
-Chain, payments, and the resolution oracle are mocked. The venue is served over Tokio and Axum. Handlers do not move funds; they send commands to an engine actor.
+Pricing is not this system's problem. Capital is: every intermediate state holds money and every participant is adversarial. Chain, payments, and the oracle are mocked. The venue is Tokio + Axum; handlers never move funds, they send commands to one engine actor.
 
 ## Domain objects
 
@@ -24,119 +22,72 @@ flowchart TB
     Escrow -->|"locks"| Ledger
 ```
 
-- **Request** — aggregate root. Owns legs, quotes, deadlines, and `RequestState`.
-- **Leg** — one binary contract (id plus a free-text description the engine never interprets), side (`BuyYes` / `SellYes` / `BuyNo` / `SellNo`), and notional. Not an order. Buying No at `1 - p` is selling Yes at `p`: prices, collateral, and escrow are always expressed in Yes terms, so `BuyYes` and `SellNo` make the requester the Yes-buyer, `SellYes` and `BuyNo` make the maker the Yes-buyer.
-- **Quote** — market-maker price, size, and expiry. Reserves MM collateral while `Live` or `Selected`.
-- **Escrow** — exists only after accept. Yes-buyer locked `p * n`, Yes-seller locked `(1 - p) * n`, total `n`.
+- **Leg**: one binary contract (opaque id and description), the requester's side, a notional. Buying No at `1 - p` is selling Yes at `p`, so prices, collateral, and escrow are always in Yes terms: `buy_yes` / `sell_no` make the requester the Yes-buyer, `sell_yes` / `buy_no` make the maker the Yes-buyer.
+- **Quote**: maker price, size, expiry. Reserves maker collateral while `Live` or `Selected`.
+- **Escrow**: exists only after accept. Yes-buyer locked `p * n`, Yes-seller `(1 - p) * n`, total `n`.
 
-This is not a CLOB. There is no order book, no `Market` / `Limit` / `Stop` types, and no partial fills. Fill is atomic per request.
+Not a CLOB: no order book, no order types, no partial fills. Fill is atomic per request.
 
-## Core components
+## Components
 
 ```mermaid
 flowchart TB
     subgraph clients [Clients]
         Requester
         MarketMaker
-        OracleOperator
+        Oracle
     end
-
-    subgraph http [Axum HTTP]
-        Router
-        PartyExtractor["PartyId extractor"]
-        Handlers
+    subgraph http [Axum]
+        Router --> PartyExtractor["x-party-id extractor"] --> Handlers
     end
-
-    subgraph runtime [Tokio runtime]
+    subgraph runtime [Tokio]
         ExpiryWorker["Expiry worker"]
         EngineActor["Engine actor"]
     end
-
-    subgraph domain [Domain]
-        Matching["Best-quote matching"]
-        Aggregates["RfqRequest aggregates"]
-    end
-
-    subgraph mocks [Mocked externals]
-        Ledger["Ledger"]
-        Oracle["Oracle"]
-        Clock["Clock"]
-    end
-
     Requester --> Router
     MarketMaker --> Router
-    OracleOperator --> Router
-    Router --> PartyExtractor --> Handlers
+    Oracle --> Router
     Handlers -->|"command plus oneshot"| EngineActor
-    ExpiryWorker -->|"Tick"| EngineActor
-    EngineActor --> Aggregates
-    EngineActor --> Matching
-    EngineActor --> Ledger
-    EngineActor --> Oracle
+    ExpiryWorker -->|"Tick now"| EngineActor
+    EngineActor --> Matching["select_best (pure)"]
+    EngineActor --> Ledger["Ledger (in-memory)"]
     EngineActor --> Clock
 ```
 
-- **Axum** parses JSON, extracts `x-party-id`, sends a command, maps errors to HTTP. No ledger I/O in handlers.
-- **Engine actor** owns all requests and serializes mutations so accept versus expiry cannot race.
-- **Matching** is a pure function: eligible live quotes with `size >= notional` and `expires_at >= accept_deadline` (so the quote survives the whole accept window); legs where the requester ends up long Yes (`BuyYes`, `SellNo`) take the lowest Yes price, legs where the requester ends up short Yes (`SellYes`, `BuyNo`) the highest; ties break on lowest `seq`, the engine-assigned submit order.
-- **Ledger / Oracle / Clock** are traits with in-memory mocks.
+The engine actor owns all requests and applies commands one at a time, so accept, cancel, and expiry cannot interleave. Matching is pure: eligible quotes are `Live`, `size >= notional`, unexpired, and `expires_at >= accept_deadline`; long-Yes legs take the lowest Yes price, short-Yes legs the highest; ties break on engine submit order.
 
 ### HTTP surface
 
-Identity is claimed via `x-party-id`. Authorization is: you may only accept or reject your own request, and only cancel your own live quote.
+Identity is the `x-party-id` header. Authorization: accept or reject only your own request, cancel only your own live quote.
 
-- `POST /v1/ledger/credit` — mock faucet
-- `GET /v1/ledger/{party_id}` — balances
-- `POST /v1/requests` — open an RFQ
-- `GET /v1/requests/{id}` — state, legs, quotes, package if presented
-- `POST /v1/requests/{id}/quotes` — submit a quote (reserves collateral)
-- `DELETE /v1/quotes/{id}` — cancel if still live and the request is open
-- `POST /v1/requests/{id}/accept`
-- `POST /v1/requests/{id}/reject`
+- `POST /v1/ledger/credit` (mock faucet), `GET /v1/ledger/{party_id}`
+- `POST /v1/requests`, `GET /v1/requests/{id}`
+- `POST /v1/requests/{id}/quotes`, `DELETE /v1/quotes/{id}`
+- `POST /v1/requests/{id}/accept`, `POST /v1/requests/{id}/reject`
 - `POST /v1/oracle/resolve`
 
-## Interactions
-
-### Happy path
+## Happy path
 
 ```mermaid
 sequenceDiagram
     participant Req as Requester
     participant MM as MarketMaker
-    participant Api as Axum
     participant Eng as EngineActor
     participant Led as Ledger
-    participant Ora as Oracle
     participant Tick as ExpiryWorker
 
-    Req->>Api: POST requests
-    Api->>Eng: SubmitRequest
-    Eng-->>Api: Open
-
-    MM->>Api: POST quotes
-    Api->>Eng: SubmitQuote
+    Req->>Eng: SubmitRequest (Open)
+    MM->>Eng: SubmitQuote
     Eng->>Led: reserve MM collateral
-    Led-->>Eng: ok
-    Eng-->>Api: Quote Live
-
     Tick->>Eng: Tick past response_deadline
-    Eng->>Eng: select best per leg
-    Note over Eng: Open to Presented
-
-    Req->>Api: POST accept
-    Api->>Eng: Accept
-    Eng->>Led: lock_batch all legs
-    Led-->>Eng: escrow locked
-    Eng->>Led: release unselected quotes
-    Note over Eng: Presented to Locked
-
-    Ora->>Api: POST oracle resolve Yes
-    Api->>Eng: Resolve
-    Eng->>Led: payout winner notional
-    Note over Eng: Locked to Settled
+    Eng->>Eng: select best per leg (Open to Presented)
+    Req->>Eng: Accept
+    Eng->>Led: lock_batch all legs, release losers (Presented to Locked)
+    Req->>Eng: Resolve Yes
+    Eng->>Led: payout n per leg to Yes-buyer (Locked to Settled)
 ```
 
-### Multi-leg abort: leg 2 of 3 unmatched
+## Multi-leg abort: leg 2 of 3 unmatched
 
 ```mermaid
 sequenceDiagram
@@ -147,107 +98,72 @@ sequenceDiagram
 
     MM->>Eng: quotes on leg1 and leg3
     Eng->>Led: reserve both
-    Note over Eng: provisional match only not escrow
-
     Tick->>Eng: Tick at response_deadline
-    Eng->>Eng: leg2 has no live quote
-    Eng->>Led: release leg1 and leg3 reservations
-    Note over Eng: Open to Failed
+    Eng->>Eng: leg2 has no eligible quote
+    Eng->>Led: release leg1 and leg3 (Open to Failed)
     Note over Led: lock_batch never called
 ```
 
-A provisional match is a reservation, not a lock. If any leg is unmatched at the response deadline, the whole request fails and every reservation is released. The requester is never shown a package. Escrow is request-atomic: there is no per-leg half-locked state.
+A provisional match is a reservation, not a lock. Escrow is request-atomic: there is no half-locked state.
 
 ## Money flow
 
-Two buckets, never mixed:
-
-- **Reserved** — reversible, quote-scoped. Posted when a market maker submits a quote.
-- **Escrowed** — held until resolve or unwind, request-scoped. Created only on accept, all legs in one batch.
-
-For price `p` and notional `n`: Yes-buyer locks `p * n`, Yes-seller locks `(1 - p) * n`, escrow total is `n`. The winning side receives `n`.
+Two buckets, never mixed: **reserved** is reversible and quote-scoped, posted at submit; **escrowed** is request-scoped, created only on accept, all legs in one `lock_batch`.
 
 ```mermaid
 flowchart LR
-    subgraph party [Party balances]
-        Free
-        Reserved
-        Escrowed
-    end
-
     Free -->|"MM submit_quote"| Reserved
-    Reserved -->|"cancel lose or Failed"| Free
-    Reserved -->|"accept MM side"| Escrowed
-    Free -->|"accept requester side"| Escrowed
-    Escrowed -->|"Yes or No payout"| Free
-    Escrowed -->|"Invalid or unwind"| Free
+    Reserved -->|"cancel, lose, expire, or Failed"| Free
+    Reserved -->|"accept: MM side"| Escrowed
+    Free -->|"accept: requester side"| Escrowed
+    Escrowed -->|"Yes or No: payout to winner"| Free
+    Escrowed -->|"Invalid: refund each poster"| Free
 ```
 
-Where funds sit:
+- **Open**: requester stays free (price unknown). Every live quote has maker collateral reserved.
+- **Presented**: selected quotes are firm (no cancel). Unselected quotes stay reserved until accept, reject, or window expiry so the same collateral cannot be spent into another RFQ meanwhile.
+- **Locked**: selected reservations plus the requester's free balance move to escrow in one batch, or nothing moves. Losers are released.
+- **Settled**: escrow pays `n` per leg to the winner. **Unwound / Failed**: every hold returns to its poster.
 
-- **Open** — requester remains free (price unknown). Every live quote has MM collateral reserved. No escrow.
-- **Presented** — selected quotes stay reserved and become firm (MM cannot cancel). Unselected quotes stay reserved until accept or fail so they cannot be double-spent into another RFQ during the window.
-- **Locked** — selected MM reservation plus requester free balance move to escrow in one `lock_batch`. Losing quotes are released to free.
-- **Settled** — escrow pays `n` to the winner's free balance.
-- **Failed / Unwound** — every hold returns to the party that posted it. Failed after Open never creates escrow.
-
-Conservation: for each party, `free + reserved + escrowed` equals credits minus amounts paid out to others. Venue escrowed sum equals sum of locked notionals on Locked or Disputed requests.
+Conservation: per party, `free + reserved + escrowed` equals credits minus paid out plus received. Venue-wide, escrowed equals the notionals of `Locked` and `Disputed` requests. The tests assert both after every scenario.
 
 ## Request state machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Open: requester SubmitRequest
-    Open --> Open: MM SubmitQuote or CancelQuote
-    Open --> Presented: Tick all legs have a valid best quote
-    Open --> Failed: Tick any leg unmatched at deadline
-    Presented --> Locked: requester Accept
-    Presented --> Failed: requester Reject or accept window expiry
-    Locked --> Settled: oracle Yes or No
-    Locked --> Disputed: oracle Disputed or resolution_timeout
-    Locked --> Unwound: oracle Invalid
-    Disputed --> Settled: oracle Yes or No
-    Disputed --> Unwound: oracle Invalid or unwind_timeout
+    [*] --> Open: SubmitRequest
+    Open --> Open: SubmitQuote or CancelQuote
+    Open --> Presented: Tick, every leg has an eligible best quote
+    Open --> Failed: Tick, any leg unmatched
+    Presented --> Locked: Accept, lock_batch succeeds
+    Presented --> Failed: Reject, accept window expiry, or requester cannot fund lock_batch
+    Locked --> Settled: Resolve Yes or No
+    Locked --> Disputed: Resolve Disputed
+    Locked --> Unwound: Resolve Invalid
+    Disputed --> Settled: Resolve Yes or No
+    Disputed --> Unwound: Resolve Invalid
     Failed --> [*]
     Settled --> [*]
     Unwound --> [*]
 ```
 
-Who may trigger each transition:
-
-- **Open** — market makers submit or cancel their own live quotes. The expiry worker ticks quotes stale and, at `response_deadline`, either presents a package or fails the request.
-- **Presented** — only the requester accepts or rejects. The worker expires the accept window. No new quotes. Selected quotes cannot be cancelled.
-- **Locked / Disputed** — only the oracle resolves, or the worker applies delay policy. Parties cannot withdraw.
-- **Settled / Unwound / Failed** — terminal. A second accept or reject is `409`.
+`Settled`, `Unwound`, and `Failed` are terminal: any further accept, reject, or resolve is `409`. `Locked` and `Disputed` have no timer today; see `docs/RESOLUTION.md`.
 
 ### Quote lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> Live: SubmitQuote reserves collateral
-    Live --> Released: cancel expiry lose or request Failed
+    Live --> Released: cancel, expiry, lose at accept, or request Failed
     Live --> Selected: request Presented
-    Selected --> Locked: requester Accept
-    Selected --> Released: reject window expiry or batch fail
-    Locked --> [*]
-    Released --> [*]
+    Selected --> Locked: Accept
+    Selected --> Released: Reject, window expiry, or lock_batch refused
 ```
-
-Accepting one quote on a leg rejects competing quotes on that leg and releases the capital they reserved.
-
-## Resolution
-
-The engine does not interpret contract text. It accepts an oracle enum only.
-
-- **Yes / No** — pay `n` from escrow to the winning side.
-- **Unavailable / delayed** — stay Locked. After `resolution_timeout`, move to Disputed (still no payout). After `unwind_timeout`, Unwound: refund `p * n` and `(1 - p) * n`.
-- **Disputed** — same hold; only a later Yes/No or unwind exits.
-- **Invalid / ambiguous wording** — immediate Unwound, not a 50/50 split.
 
 ## Quote lifetime: seconds vs days
 
-Invariant to that decision: request and quote states, who may trigger them, reservation versus escrow, best-quote comparison, binary payoff math, and request-atomic `lock_batch`.
+Invariant to that choice: the state machines and who may trigger each transition, reservation versus escrow, best-quote comparison, binary payoff math, and request-atomic `lock_batch`.
 
-Not invariant: how `Tick` is scheduled (in-process interval versus a durable job), whether quotes are firm at submit versus indicative-then-firm (day-long quotes make reserve-at-submit expensive), and clock-skew tolerance.
+Not invariant: how `Tick` is scheduled (an in-process interval today; a durable job for day-long windows), whether quotes are firm at submit or indicative-then-firm (reserving collateral for days is expensive, so a `ConfirmQuote` step before `Presented` would appear), and clock-skew tolerance.
 
-Deadlines are absolute timestamps. `Tick` carries `now`. Changing seconds to days is data and worker period, not a rewrite of Locked or Settled. A later firm-up step is a `ConfirmQuote` command before Presented.
+Deadlines are absolute timestamps and `Tick` carries `now`, so seconds-to-days is data and worker period, not a rewrite of `Locked` or `Settled`.

@@ -1,12 +1,85 @@
-//! In-memory ledger. One mutex around all state, so `lock_batch` is trivially atomic.
+//! Party balances in three buckets: free, reserved (quote-scoped), escrowed (request-scoped).
+//! The trait is what the engine talks to; `MockLedger` is the in-memory implementation.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::domain::{
-    Amount, EscrowHandle, InsufficientFunds, Ledger, LedgerAccount, LockBatchError, LockItem,
-    PartyId, ReservationId,
-};
+use serde::Serialize;
+
+use crate::domain::{Amount, PartyId};
+
+/// Handle to a reversible, quote-scoped hold on a market maker's funds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReservationId(u64);
+
+/// Handle to one party's escrowed chunk of one leg. `lock_batch` issues one per [`LockItem`],
+/// so a leg's escrow is two handles: the Yes-buyer's and the Yes-seller's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EscrowHandle(u64);
+
+/// One side of one leg to be moved into escrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockItem {
+    /// Market-maker side: convert an existing reservation into escrow.
+    FromReservation(ReservationId),
+    /// Requester side: take directly from free balance (the requester never reserves).
+    FromFree { party: PartyId, amount: Amount },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("insufficient funds for {party}: needed {needed}, available {available}")]
+pub struct InsufficientFunds {
+    pub party: PartyId,
+    pub needed: Amount,
+    pub available: Amount,
+}
+
+/// Why `lock_batch` refused. On error no account has been touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LockBatchError {
+    #[error(transparent)]
+    InsufficientFunds(#[from] InsufficientFunds),
+    #[error("unknown or already-consumed reservation {0:?}")]
+    UnknownReservation(ReservationId),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct LedgerAccount {
+    pub free: Amount,
+    pub reserved: Amount,
+    pub escrowed: Amount,
+}
+
+impl LedgerAccount {
+    pub fn total(self) -> Amount {
+        self.free + self.reserved + self.escrowed
+    }
+}
+
+/// Methods take `&self` so one ledger can sit behind an `Arc`; implementations synchronize
+/// internally.
+pub trait Ledger {
+    /// Mock faucet: add `amount` to `party`'s free balance.
+    fn credit(&self, party: PartyId, amount: Amount);
+
+    /// Move `amount` from free to reserved. Fails without side effects if free is short.
+    fn reserve(&self, party: PartyId, amount: Amount) -> Result<ReservationId, InsufficientFunds>;
+
+    /// Return a reservation to free. Unknown or already-consumed handles are a no-op.
+    fn release(&self, reservation: ReservationId);
+
+    /// Move every item into escrow, or nothing at all. Returns one handle per item, in order.
+    fn lock_batch(&self, items: Vec<LockItem>) -> Result<Vec<EscrowHandle>, LockBatchError>;
+
+    /// Pay an escrowed chunk to `to`'s free balance. Consumes the handle; a repeat is a no-op.
+    fn payout(&self, escrow: EscrowHandle, to: PartyId);
+
+    /// Return an escrowed chunk to the party that posted it. Consumes the handle; a repeat is
+    /// a no-op.
+    fn refund(&self, escrow: EscrowHandle);
+
+    fn balance(&self, party: PartyId) -> LedgerAccount;
+}
 
 /// A hold on one party's funds: who posted it and how much.
 #[derive(Debug, Clone, Copy)]
@@ -21,25 +94,11 @@ struct Inner {
     reservations: HashMap<ReservationId, Hold>,
     escrows: HashMap<EscrowHandle, Hold>,
     next_handle: u64,
-    /// Sum of every `credit` ever made. Payouts move money between parties, so the sum of all
-    /// account totals must always equal this.
-    total_credited: Amount,
-    /// Per-party audit trail, so tests can prove `total == credited - paid_out + received`.
+    /// Audit trail so tests can prove `total == credited - paid_out + received` per party.
     credited: HashMap<PartyId, Amount>,
     paid_to_others: HashMap<PartyId, Amount>,
     received_from_others: HashMap<PartyId, Amount>,
-    /// Number of `lock_batch` attempts, successful or not.
     lock_batch_calls: usize,
-}
-
-/// One party's row in [`MockLedger::audit`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PartyAudit {
-    pub party: PartyId,
-    pub account: LedgerAccount,
-    pub credited: Amount,
-    pub paid_to_others: Amount,
-    pub received_from_others: Amount,
 }
 
 impl Inner {
@@ -58,7 +117,17 @@ impl Inner {
     }
 }
 
-/// In-memory [`Ledger`].
+/// One party's row in [`MockLedger::audit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartyAudit {
+    pub party: PartyId,
+    pub account: LedgerAccount,
+    pub credited: Amount,
+    pub paid_to_others: Amount,
+    pub received_from_others: Amount,
+}
+
+/// In-memory [`Ledger`]. One mutex around all state, so `lock_batch` is trivially atomic.
 #[derive(Debug, Default)]
 pub struct MockLedger {
     inner: Mutex<Inner>,
@@ -73,16 +142,11 @@ impl MockLedger {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Test helper: sum of `free + reserved + escrowed` across every party.
-    pub fn total_held(&self) -> Amount {
-        self.lock().accounts.values().map(|a| a.total()).sum()
-    }
-
-    /// Test helper: every unit credited is still somewhere in some account.
+    /// Test helper: every unit credited is still in some account.
     pub fn conservation_holds(&self) -> bool {
         let inner = self.lock();
         let held: Amount = inner.accounts.values().map(|a| a.total()).sum();
-        held == inner.total_credited
+        held == inner.credited.values().copied().sum()
     }
 
     /// Test helper: sum of every party's `escrowed` bucket.
@@ -90,7 +154,7 @@ impl MockLedger {
         self.lock().accounts.values().map(|a| a.escrowed).sum()
     }
 
-    /// Test helper: how many times `lock_batch` was attempted (including refused batches).
+    /// Test helper: how many times `lock_batch` was attempted, refused batches included.
     pub fn lock_batch_calls(&self) -> usize {
         self.lock().lock_batch_calls
     }
@@ -117,7 +181,6 @@ impl Ledger for MockLedger {
     fn credit(&self, party: PartyId, amount: Amount) {
         let mut inner = self.lock();
         inner.account(party).free += amount;
-        inner.total_credited += amount;
         *inner.credited.entry(party).or_insert(Amount::ZERO) += amount;
     }
 
@@ -125,12 +188,16 @@ impl Ledger for MockLedger {
         let mut inner = self.lock();
         let available = inner.free_of(party);
         if available < amount {
-            return Err(InsufficientFunds { party, needed: amount, available });
+            return Err(InsufficientFunds {
+                party,
+                needed: amount,
+                available,
+            });
         }
         let account = inner.account(party);
         account.free -= amount;
         account.reserved += amount;
-        let id = ReservationId::new(inner.fresh_handle());
+        let id = ReservationId(inner.fresh_handle());
         inner.reservations.insert(id, Hold { party, amount });
         Ok(id)
     }
@@ -149,13 +216,12 @@ impl Ledger for MockLedger {
         let mut inner = self.lock();
         inner.lock_batch_calls += 1;
 
-        // Phase 1: validate everything against a scratch view. Nothing is mutated yet.
-        // Multiple `FromFree` items for one party must be covered by that party's free balance
-        // *together*, and a reservation may be consumed at most once per batch.
+        // Phase 1: validate against a scratch view; nothing is mutated. Several `FromFree`
+        // items for one party must be covered by that party's free balance together, and a
+        // reservation may be consumed at most once per batch.
         let mut pending_free: HashMap<PartyId, Amount> = HashMap::new();
         let mut consumed: Vec<ReservationId> = Vec::new();
         let mut holds: Vec<Hold> = Vec::with_capacity(items.len());
-
         for item in &items {
             match *item {
                 LockItem::FromReservation(id) => {
@@ -176,7 +242,12 @@ impl Ledger for MockLedger {
                     *needed = needed.checked_add(amount).unwrap_or(Amount::new(u64::MAX));
                     let available = inner.free_of(party);
                     if available < *needed {
-                        return Err(InsufficientFunds { party, needed: *needed, available }.into());
+                        return Err(InsufficientFunds {
+                            party,
+                            needed: *needed,
+                            available,
+                        }
+                        .into());
                     }
                     holds.push(Hold { party, amount });
                 }
@@ -199,7 +270,7 @@ impl Ledger for MockLedger {
                     account.escrowed += hold.amount;
                 }
             }
-            let handle = EscrowHandle::new(inner.fresh_handle());
+            let handle = EscrowHandle(inner.fresh_handle());
             inner.escrows.insert(handle, hold);
             handles.push(handle);
         }
@@ -214,7 +285,10 @@ impl Ledger for MockLedger {
         inner.account(hold.party).escrowed -= hold.amount;
         inner.account(to).free += hold.amount;
         if to != hold.party {
-            *inner.paid_to_others.entry(hold.party).or_insert(Amount::ZERO) += hold.amount;
+            *inner
+                .paid_to_others
+                .entry(hold.party)
+                .or_insert(Amount::ZERO) += hold.amount;
             *inner.received_from_others.entry(to).or_insert(Amount::ZERO) += hold.amount;
         }
     }
@@ -230,7 +304,11 @@ impl Ledger for MockLedger {
     }
 
     fn balance(&self, party: PartyId) -> LedgerAccount {
-        self.lock().accounts.get(&party).copied().unwrap_or_default()
+        self.lock()
+            .accounts
+            .get(&party)
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -244,6 +322,11 @@ mod tests {
             reserved: Amount::new(reserved),
             escrowed: Amount::new(escrowed),
         }
+    }
+
+    #[test]
+    fn ledger_account_total() {
+        assert_eq!(acct(1, 2, 3).total(), Amount::new(6));
     }
 
     #[test]
@@ -267,14 +350,26 @@ mod tests {
 
         assert_eq!(
             ledger.reserve(p, Amount::new(61)),
-            Err(InsufficientFunds { party: p, needed: Amount::new(61), available: Amount::new(60) })
+            Err(InsufficientFunds {
+                party: p,
+                needed: Amount::new(61),
+                available: Amount::new(60)
+            })
         );
-        assert_eq!(ledger.balance(p), acct(60, 40, 0), "failed reserve has no side effects");
+        assert_eq!(
+            ledger.balance(p),
+            acct(60, 40, 0),
+            "failed reserve has no side effects"
+        );
 
         ledger.release(r);
         assert_eq!(ledger.balance(p), acct(100, 0, 0));
         ledger.release(r);
-        assert_eq!(ledger.balance(p), acct(100, 0, 0), "double release is a no-op");
+        assert_eq!(
+            ledger.balance(p),
+            acct(100, 0, 0),
+            "double release is a no-op"
+        );
         assert!(ledger.conservation_holds());
     }
 
@@ -289,14 +384,24 @@ mod tests {
         ledger.credit(poor, Amount::new(10));
 
         let reservation = ledger.reserve(mm, Amount::new(40)).unwrap();
-        let before = [ledger.balance(mm), ledger.balance(requester), ledger.balance(poor)];
+        let before = [
+            ledger.balance(mm),
+            ledger.balance(requester),
+            ledger.balance(poor),
+        ];
         assert_eq!(before, [acct(60, 40, 0), acct(100, 0, 0), acct(10, 0, 0)]);
 
         // Third item cannot be covered: `poor` has 10 free, needs 50.
         let result = ledger.lock_batch(vec![
             LockItem::FromReservation(reservation),
-            LockItem::FromFree { party: requester, amount: Amount::new(60) },
-            LockItem::FromFree { party: poor, amount: Amount::new(50) },
+            LockItem::FromFree {
+                party: requester,
+                amount: Amount::new(60),
+            },
+            LockItem::FromFree {
+                party: poor,
+                amount: Amount::new(50),
+            },
         ]);
         assert_eq!(
             result,
@@ -307,7 +412,11 @@ mod tests {
             }))
         );
 
-        let after = [ledger.balance(mm), ledger.balance(requester), ledger.balance(poor)];
+        let after = [
+            ledger.balance(mm),
+            ledger.balance(requester),
+            ledger.balance(poor),
+        ];
         assert_eq!(after, before, "no account may change when any item fails");
         assert!(ledger.lock().escrows.is_empty(), "no escrow handles issued");
         assert!(
@@ -325,8 +434,14 @@ mod tests {
 
         // Each item alone fits; together they do not.
         let result = ledger.lock_batch(vec![
-            LockItem::FromFree { party: p, amount: Amount::new(60) },
-            LockItem::FromFree { party: p, amount: Amount::new(60) },
+            LockItem::FromFree {
+                party: p,
+                amount: Amount::new(60),
+            },
+            LockItem::FromFree {
+                party: p,
+                amount: Amount::new(60),
+            },
         ]);
         assert!(matches!(result, Err(LockBatchError::InsufficientFunds(_))));
         assert_eq!(ledger.balance(p), acct(100, 0, 0));
@@ -339,13 +454,16 @@ mod tests {
         ledger.credit(p, Amount::new(100));
         let r = ledger.reserve(p, Amount::new(10)).unwrap();
 
-        let bogus = ReservationId::new(9_999);
+        let bogus = ReservationId(9_999);
         assert_eq!(
             ledger.lock_batch(vec![LockItem::FromReservation(bogus)]),
             Err(LockBatchError::UnknownReservation(bogus))
         );
         assert_eq!(
-            ledger.lock_batch(vec![LockItem::FromReservation(r), LockItem::FromReservation(r)]),
+            ledger.lock_batch(vec![
+                LockItem::FromReservation(r),
+                LockItem::FromReservation(r)
+            ]),
             Err(LockBatchError::UnknownReservation(r))
         );
         assert_eq!(ledger.balance(p), acct(90, 10, 0));
@@ -364,13 +482,19 @@ mod tests {
         let handles = ledger
             .lock_batch(vec![
                 LockItem::FromReservation(reservation),
-                LockItem::FromFree { party: requester, amount: Amount::new(40) },
+                LockItem::FromFree {
+                    party: requester,
+                    amount: Amount::new(40),
+                },
             ])
             .unwrap();
         assert_eq!(handles.len(), 2);
         assert_eq!(ledger.balance(mm), acct(40, 0, 60));
         assert_eq!(ledger.balance(requester), acct(60, 0, 40));
-        assert!(ledger.lock().reservations.is_empty(), "reservation consumed by lock");
+        assert!(
+            ledger.lock().reservations.is_empty(),
+            "reservation consumed by lock"
+        );
 
         // Yes resolves: requester wins n = 100.
         for h in &handles {
@@ -379,7 +503,11 @@ mod tests {
         assert_eq!(ledger.balance(mm), acct(40, 0, 0));
         assert_eq!(ledger.balance(requester), acct(160, 0, 0));
         ledger.payout(handles[0], requester);
-        assert_eq!(ledger.balance(requester), acct(160, 0, 0), "double payout is a no-op");
+        assert_eq!(
+            ledger.balance(requester),
+            acct(160, 0, 0),
+            "double payout is a no-op"
+        );
         assert!(ledger.conservation_holds());
 
         // Fresh leg, then Invalid: refund returns each side to its poster.
@@ -387,7 +515,10 @@ mod tests {
         let handles = ledger
             .lock_batch(vec![
                 LockItem::FromReservation(reservation),
-                LockItem::FromFree { party: requester, amount: Amount::new(70) },
+                LockItem::FromFree {
+                    party: requester,
+                    amount: Amount::new(70),
+                },
             ])
             .unwrap();
         assert_eq!(ledger.balance(mm), acct(10, 0, 30));
@@ -398,6 +529,6 @@ mod tests {
         assert_eq!(ledger.balance(mm), acct(40, 0, 0));
         assert_eq!(ledger.balance(requester), acct(160, 0, 0));
         assert!(ledger.conservation_holds());
-        assert_eq!(ledger.total_held(), Amount::new(200));
+        assert_eq!(ledger.escrowed_total(), Amount::ZERO);
     }
 }

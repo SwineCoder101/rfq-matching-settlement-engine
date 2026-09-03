@@ -20,9 +20,10 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use rfq_matching_settlement_engine::api::{AppState, PARTY_HEADER, router};
+use rfq_matching_settlement_engine::clock::{Clock, MockClock};
 use rfq_matching_settlement_engine::domain::PartyId;
 use rfq_matching_settlement_engine::engine::{Engine, EngineConfig, EngineHandle, spawn_engine};
-use rfq_matching_settlement_engine::mocks::{MockClock, MockLedger};
+use rfq_matching_settlement_engine::ledger::MockLedger;
 
 pub const ACCEPT_WINDOW_SECS: i64 = 60;
 
@@ -41,24 +42,29 @@ macro_rules! vars {
 /// Load `tests/fixtures/<name>`, replace every `{{key}}` with its value, and parse as JSON.
 /// Substitution happens on the raw text so placeholders work for strings *and* numbers.
 pub fn fixture(name: &str, vars: Vec<(&str, String)>) -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
     let mut text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read fixture {}: {e}", path.display()));
     for (key, value) in vars {
         text = text.replace(&format!("{{{{{key}}}}}"), &value);
     }
-    assert!(!text.contains("{{"), "fixture {name} has unsubstituted placeholders:\n{text}");
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("fixture {name} is not valid JSON: {e}\n{text}"))
+    assert!(
+        !text.contains("{{"),
+        "fixture {name} has unsubstituted placeholders:\n{text}"
+    );
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("fixture {name} is not valid JSON: {e}\n{text}"))
 }
 
 /// A timestamp exactly as the server serializes it.
 pub fn ts(t: DateTime<Utc>) -> String {
-    serde_json::to_value(t).unwrap().as_str().unwrap().to_owned()
-}
-
-/// One parlay leg (no per-leg notional; the request carries the stake).
-pub fn pleg(side: &str, contract: &str) -> Value {
-    json!({ "contract": contract, "description": format!("{contract} resolves Yes"), "side": side })
+    serde_json::to_value(t)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 /// One leg for `open_request`.
@@ -79,7 +85,11 @@ pub struct Balances {
 }
 
 pub const fn bal(free: u64, reserved: u64, escrowed: u64) -> Balances {
-    Balances { free, reserved, escrowed }
+    Balances {
+        free,
+        reserved,
+        escrowed,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -92,7 +102,6 @@ pub struct TestVenue {
     clock: Arc<MockClock>,
     pub ledger: Arc<MockLedger>,
     t0: DateTime<Utc>,
-    oracle_party: Uuid,
     /// Every request id this venue has opened, for `assert_conserved`.
     requests: Mutex<Vec<String>>,
 }
@@ -105,20 +114,22 @@ impl TestVenue {
         let engine = Engine::new(
             ledger.clone(),
             clock.clone(),
-            EngineConfig { accept_window: Duration::seconds(ACCEPT_WINDOW_SECS) },
+            EngineConfig {
+                accept_window: Duration::seconds(ACCEPT_WINDOW_SECS),
+            },
         );
         let (engine, _actor) = spawn_engine(engine);
-        let app = router(AppState { engine: engine.clone() });
-        Self { app, engine, clock, ledger, t0, oracle_party: Uuid::new_v4(), requests: Mutex::new(Vec::new()) }
-    }
-
-    /// The party this venue treats as the trusted oracle operator.
-    ///
-    /// NOTE: the engine has no notion of a trusted oracle yet — `POST /v1/oracle/resolve`
-    /// accepts any `x-party-id`. Tests that send resolves use this so they read correctly
-    /// once the check exists; `fm_untrusted_party_cannot_resolve` is red until then.
-    pub fn oracle_party(&self) -> Uuid {
-        self.oracle_party
+        let app = router(AppState {
+            engine: engine.clone(),
+        });
+        Self {
+            app,
+            engine,
+            clock,
+            ledger,
+            t0,
+            requests: Mutex::new(Vec::new()),
+        }
     }
 
     // ---- time ------------------------------------------------------------------------------
@@ -129,7 +140,7 @@ impl TestVenue {
     }
 
     pub fn now(&self) -> DateTime<Utc> {
-        self.clock.now_value()
+        self.clock.now()
     }
 
     pub fn advance(&self, by: Duration) {
@@ -150,7 +161,10 @@ impl TestVenue {
     pub async fn tick_at(&self, now: DateTime<Utc>) {
         self.engine.tick(now).await.unwrap();
         // Commands are processed in order; a read behind the tick is a barrier.
-        self.engine.balance(PartyId::from(Uuid::nil())).await.unwrap();
+        self.engine
+            .balance(PartyId::from(Uuid::nil()))
+            .await
+            .unwrap();
     }
 
     /// Move the clock to `t0 + secs` and tick.
@@ -161,13 +175,21 @@ impl TestVenue {
 
     // ---- raw HTTP --------------------------------------------------------------------------
 
-    pub async fn call(&self, method: Method, path: &str, party: Option<Uuid>, body: Option<Value>) -> (StatusCode, Value) {
+    pub async fn call(
+        &self,
+        method: Method,
+        path: &str,
+        party: Option<Uuid>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().method(method).uri(path);
         if let Some(p) = party {
             builder = builder.header(PARTY_HEADER, p.to_string());
         }
         let request = match body {
-            Some(v) => builder.header(CONTENT_TYPE, "application/json").body(Body::from(v.to_string())),
+            Some(v) => builder
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(v.to_string())),
             None => builder.body(Body::empty()),
         }
         .unwrap();
@@ -177,7 +199,8 @@ impl TestVenue {
         let body = if bytes.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }))
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }))
         };
         (status, body)
     }
@@ -185,26 +208,30 @@ impl TestVenue {
     // ---- client: every call returns (status, body) -----------------------------------------
 
     pub async fn credit(&self, party: Uuid, amount: u64) -> (StatusCode, Value) {
-        self.call(Method::POST, "/v1/ledger/credit", None, Some(json!({ "party_id": party, "amount": amount }))).await
+        self.call(
+            Method::POST,
+            "/v1/ledger/credit",
+            None,
+            Some(json!({ "party_id": party, "amount": amount })),
+        )
+        .await
     }
 
     pub async fn balance(&self, party: Uuid) -> (StatusCode, Value) {
-        self.call(Method::GET, &format!("/v1/ledger/{party}"), None, None).await
+        self.call(Method::GET, &format!("/v1/ledger/{party}"), None, None)
+            .await
     }
 
-    pub async fn open_request(&self, requester: Uuid, legs: Value, response_deadline: DateTime<Utc>) -> (StatusCode, Value) {
+    pub async fn open_request(
+        &self,
+        requester: Uuid,
+        legs: Value,
+        response_deadline: DateTime<Utc>,
+    ) -> (StatusCode, Value) {
         let body = json!({ "legs": legs, "response_deadline": ts(response_deadline) });
-        let (status, json) = self.call(Method::POST, "/v1/requests", Some(requester), Some(body)).await;
-        if status == StatusCode::CREATED {
-            self.requests.lock().unwrap().push(id_of(&json));
-        }
-        (status, json)
-    }
-
-    /// `POST /v1/requests` in parlay form: one `stake` for the whole request, legs without notional.
-    pub async fn open_parlay(&self, requester: Uuid, stake: u64, legs: Value, response_deadline: DateTime<Utc>) -> (StatusCode, Value) {
-        let body = json!({ "stake": stake, "legs": legs, "response_deadline": ts(response_deadline) });
-        let (status, json) = self.call(Method::POST, "/v1/requests", Some(requester), Some(body)).await;
+        let (status, json) = self
+            .call(Method::POST, "/v1/requests", Some(requester), Some(body))
+            .await;
         if status == StatusCode::CREATED {
             self.requests.lock().unwrap().push(id_of(&json));
         }
@@ -212,35 +239,63 @@ impl TestVenue {
     }
 
     pub async fn get_request(&self, id: &str) -> (StatusCode, Value) {
-        self.call(Method::GET, &format!("/v1/requests/{id}"), None, None).await
+        self.call(Method::GET, &format!("/v1/requests/{id}"), None, None)
+            .await
     }
 
-    pub async fn quote(&self, maker: Uuid, request_id: &str, leg_id: &str, price_bps: u32, size: u64, expires_at: DateTime<Utc>) -> (StatusCode, Value) {
+    pub async fn quote(
+        &self,
+        maker: Uuid,
+        request_id: &str,
+        leg_id: &str,
+        price_bps: u32,
+        size: u64,
+        expires_at: DateTime<Utc>,
+    ) -> (StatusCode, Value) {
         let body = json!({ "leg_id": leg_id, "price_bps": price_bps, "size": size, "expires_at": ts(expires_at) });
-        self.call(Method::POST, &format!("/v1/requests/{request_id}/quotes"), Some(maker), Some(body)).await
+        self.call(
+            Method::POST,
+            &format!("/v1/requests/{request_id}/quotes"),
+            Some(maker),
+            Some(body),
+        )
+        .await
     }
 
     pub async fn cancel_quote(&self, maker: Uuid, quote_id: &str) -> (StatusCode, Value) {
-        self.call(Method::DELETE, &format!("/v1/quotes/{quote_id}"), Some(maker), None).await
+        self.call(
+            Method::DELETE,
+            &format!("/v1/quotes/{quote_id}"),
+            Some(maker),
+            None,
+        )
+        .await
     }
 
     pub async fn accept(&self, party: Uuid, request_id: &str) -> (StatusCode, Value) {
-        self.call(Method::POST, &format!("/v1/requests/{request_id}/accept"), Some(party), None).await
+        self.call(
+            Method::POST,
+            &format!("/v1/requests/{request_id}/accept"),
+            Some(party),
+            None,
+        )
+        .await
     }
 
     pub async fn reject(&self, party: Uuid, request_id: &str) -> (StatusCode, Value) {
-        self.call(Method::POST, &format!("/v1/requests/{request_id}/reject"), Some(party), None).await
+        self.call(
+            Method::POST,
+            &format!("/v1/requests/{request_id}/reject"),
+            Some(party),
+            None,
+        )
+        .await
     }
 
-    pub async fn resolve(&self, party: Uuid, request_id: &str, outcome: &str) -> (StatusCode, Value) {
+    pub async fn resolve(&self, request_id: &str, outcome: &str) -> (StatusCode, Value) {
         let body = json!({ "request_id": request_id, "outcome": outcome });
-        self.call(Method::POST, "/v1/oracle/resolve", Some(party), Some(body)).await
-    }
-
-    /// `POST /v1/oracle/resolve` for one leg of a request.
-    pub async fn resolve_leg(&self, party: Uuid, request_id: &str, leg_id: &str, outcome: &str) -> (StatusCode, Value) {
-        let body = json!({ "request_id": request_id, "leg_id": leg_id, "outcome": outcome });
-        self.call(Method::POST, "/v1/oracle/resolve", Some(party), Some(body)).await
+        self.call(Method::POST, "/v1/oracle/resolve", None, Some(body))
+            .await
     }
 
     // ---- checked conveniences (assert the status, return the useful part) ------------------
@@ -266,18 +321,31 @@ impl TestVenue {
             let got = self.balances(*party).await;
             assert_eq!(got, *want, "balances of {label}");
         }
-        assert!(self.ledger.conservation_holds(), "ledger conservation violated");
+        assert!(
+            self.ledger.conservation_holds(),
+            "ledger conservation violated"
+        );
     }
 
     /// `POST /v1/requests` from a fixture; asserts 201 and returns the body.
-    pub async fn create_request(&self, requester: Uuid, fixture_name: &str, response_deadline: DateTime<Utc>) -> Value {
-        let body = fixture(fixture_name, vars!["response_deadline" => ts(response_deadline)]);
+    pub async fn create_request(
+        &self,
+        requester: Uuid,
+        fixture_name: &str,
+        response_deadline: DateTime<Utc>,
+    ) -> Value {
+        let body = fixture(
+            fixture_name,
+            vars!["response_deadline" => ts(response_deadline)],
+        );
         self.create_request_body(requester, body).await
     }
 
     /// `POST /v1/requests` with an arbitrary body; asserts 201 and returns the body.
     pub async fn create_request_body(&self, requester: Uuid, body: Value) -> Value {
-        let (status, json) = self.call(Method::POST, "/v1/requests", Some(requester), Some(body)).await;
+        let (status, json) = self
+            .call(Method::POST, "/v1/requests", Some(requester), Some(body))
+            .await;
         assert_eq!(status, StatusCode::CREATED, "POST /v1/requests → {json}");
         self.requests.lock().unwrap().push(id_of(&json));
         json
@@ -291,8 +359,18 @@ impl TestVenue {
     }
 
     /// Submit a quote; asserts 201 and returns the quote id.
-    pub async fn quote_ok(&self, maker: Uuid, request_id: &str, leg_id: &str, price_bps: u32, size: u64, expires_at: DateTime<Utc>) -> String {
-        let (status, json) = self.quote(maker, request_id, leg_id, price_bps, size, expires_at).await;
+    pub async fn quote_ok(
+        &self,
+        maker: Uuid,
+        request_id: &str,
+        leg_id: &str,
+        price_bps: u32,
+        size: u64,
+        expires_at: DateTime<Utc>,
+    ) -> String {
+        let (status, json) = self
+            .quote(maker, request_id, leg_id, price_bps, size, expires_at)
+            .await;
         assert_eq!(status, StatusCode::CREATED, "quote → {json}");
         assert_eq!(json["state"], "live");
         id_of(&json)
@@ -305,13 +383,18 @@ impl TestVenue {
     /// `Locked` / `Disputed` requests. Call at the end of every test.
     pub async fn assert_conserved(&self) {
         for a in self.ledger.audit() {
-            let expected = i128::from(a.credited.minor_units()) - i128::from(a.paid_to_others.minor_units())
+            let expected = i128::from(a.credited.minor_units())
+                - i128::from(a.paid_to_others.minor_units())
                 + i128::from(a.received_from_others.minor_units());
             assert_eq!(
                 i128::from(a.account.total().minor_units()),
                 expected,
                 "party {} holds {:?} but credited {} − paid out {} + received {}",
-                a.party, a.account, a.credited, a.paid_to_others, a.received_from_others
+                a.party,
+                a.account,
+                a.credited,
+                a.paid_to_others,
+                a.received_from_others
             );
         }
         let ids = self.requests.lock().unwrap().clone();
@@ -319,11 +402,12 @@ impl TestVenue {
         for id in ids {
             let r = self.snapshot(&id).await;
             if r["state"] == "locked" || r["state"] == "disputed" {
-                // Parlay: the whole pool is the request's payout. Per-leg legacy: sum of notionals.
-                expected_escrow += match r["payout"].as_u64() {
-                    Some(payout) => payout,
-                    None => r["escrows"].as_array().unwrap().iter().map(|e| e["notional"].as_u64().unwrap()).sum::<u64>(),
-                };
+                expected_escrow += r["escrows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e["notional"].as_u64().unwrap())
+                    .sum::<u64>();
             }
         }
         assert_eq!(
@@ -360,7 +444,8 @@ pub struct ThreeLeg {
 
 impl TestVenue {
     pub async fn three_leg_scenario(&self) -> ThreeLeg {
-        self.three_leg_scenario_with_requester_funds(3 * SIDE_LOCK).await
+        self.three_leg_scenario_with_requester_funds(3 * SIDE_LOCK)
+            .await
     }
 
     pub async fn three_leg_scenario_with_requester_funds(&self, requester_funds: u64) -> ThreeLeg {
@@ -370,21 +455,44 @@ impl TestVenue {
         for m in makers {
             self.fund(m, SIDE_LOCK).await;
         }
-        let legs = json!([leg("buy_yes", LEG_NOTIONAL), leg("buy_yes", LEG_NOTIONAL), leg("buy_yes", LEG_NOTIONAL)]);
-        let (status, created) = self.open_request(requester, legs, self.at(RESPONSE_DEADLINE_SECS)).await;
+        let legs = json!([
+            leg("buy_yes", LEG_NOTIONAL),
+            leg("buy_yes", LEG_NOTIONAL),
+            leg("buy_yes", LEG_NOTIONAL)
+        ]);
+        let (status, created) = self
+            .open_request(requester, legs, self.at(RESPONSE_DEADLINE_SECS))
+            .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
         let leg_ids = <[String; 3]>::try_from(leg_ids(&created)).unwrap();
-        ThreeLeg { requester, makers, request_id: id_of(&created), leg_ids }
+        ThreeLeg {
+            requester,
+            makers,
+            request_id: id_of(&created),
+            leg_ids,
+        }
     }
 
     /// Maker `i` quotes leg `i` at `LEG_PRICE_BPS` for the full notional; returns the quote id.
     pub async fn quote_leg(&self, s: &ThreeLeg, i: usize) -> String {
-        self.quote_ok(s.makers[i], &s.request_id, &s.leg_ids[i], LEG_PRICE_BPS, LEG_NOTIONAL, self.at(QUOTE_EXPIRY_SECS)).await
+        self.quote_ok(
+            s.makers[i],
+            &s.request_id,
+            &s.leg_ids[i],
+            LEG_PRICE_BPS,
+            LEG_NOTIONAL,
+            self.at(QUOTE_EXPIRY_SECS),
+        )
+        .await
     }
 
     /// Quote all three legs; returns the quote ids in leg order.
     pub async fn quote_all_legs(&self, s: &ThreeLeg) -> [String; 3] {
-        [self.quote_leg(s, 0).await, self.quote_leg(s, 1).await, self.quote_leg(s, 2).await]
+        [
+            self.quote_leg(s, 0).await,
+            self.quote_leg(s, 1).await,
+            self.quote_leg(s, 2).await,
+        ]
     }
 }
 
@@ -393,11 +501,19 @@ impl TestVenue {
 // ---------------------------------------------------------------------------------------------
 
 pub fn id_of(v: &Value) -> String {
-    v["id"].as_str().unwrap_or_else(|| panic!("no id in {v}")).to_owned()
+    v["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no id in {v}"))
+        .to_owned()
 }
 
 pub fn leg_ids(request: &Value) -> Vec<String> {
-    request["legs"].as_array().unwrap().iter().map(id_of).collect()
+    request["legs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(id_of)
+        .collect()
 }
 
 pub fn quote_state<'a>(request: &'a Value, quote_id: &str) -> &'a str {
@@ -414,6 +530,10 @@ pub fn quote_state<'a>(request: &'a Value, quote_id: &str) -> &'a str {
 /// Assert each `(quote_id, state)` pair against the request snapshot.
 pub fn assert_quote_states(request: &Value, expected: &[(&str, &str)]) {
     for (quote_id, state) in expected {
-        assert_eq!(quote_state(request, quote_id), *state, "state of quote {quote_id}");
+        assert_eq!(
+            quote_state(request, quote_id),
+            *state,
+            "state of quote {quote_id}"
+        );
     }
 }

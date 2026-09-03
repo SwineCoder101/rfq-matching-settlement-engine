@@ -1,1 +1,0 @@
-{ "leg_id": "{{leg_id}}", "price_bps": {{price_bps}}, "size": {{size}}, "expires_at": "{{expires_at}}" }

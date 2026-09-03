@@ -4,18 +4,15 @@ use std::cmp::Reverse;
 
 use chrono::{DateTime, Utc};
 
-use super::ids::QuoteId;
-use super::request::{Leg, Quote};
-use super::state::QuoteState;
+use crate::domain::{Leg, Quote, QuoteId, QuoteState};
 
 /// Pick the best eligible quote for `leg`, if any.
 ///
-/// Eligible: `state == Live`, `leg_id == leg.id`, `size >= leg.notional`, `expires_at > now`,
-/// and `expires_at >= accept_deadline` (the quote must survive the whole accept window).
+/// Eligible: `Live`, on this leg, `size >= notional`, not yet expired, and
+/// `expires_at >= accept_deadline` so the quote survives the whole accept window.
 ///
-/// Prices are Yes prices. A requester who ends up long Yes (`BuyYes`, `SellNo`) wants the
-/// lowest; one who ends up short Yes (`SellYes`, `BuyNo`) wants the highest. Ties break on
-/// lowest `seq` — the engine's monotonic submit order — not on `submitted_at`.
+/// Prices are Yes prices: a requester who ends up long Yes wants the lowest, one who ends up
+/// short Yes the highest. Ties break on lowest `seq`.
 pub fn select_best(
     leg: &Leg,
     quotes: &[Quote],
@@ -41,7 +38,9 @@ pub fn select_best(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Amount, ContractDescription, ContractId, LegId, LegSide, PartyId, Price, Seq};
+    use crate::domain::{
+        Amount, ContractDescription, ContractId, LegId, LegSide, PartyId, Price, Seq,
+    };
 
     fn t(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(secs, 0).unwrap()
@@ -49,6 +48,12 @@ mod tests {
 
     const NOW: i64 = 100;
     const ACCEPT_DEADLINE: i64 = 200;
+    const ALL_SIDES: [LegSide; 4] = [
+        LegSide::BuyYes,
+        LegSide::SellYes,
+        LegSide::BuyNo,
+        LegSide::SellNo,
+    ];
 
     fn leg(side: LegSide) -> Leg {
         Leg::new(
@@ -114,8 +119,14 @@ mod tests {
         let (_, best) = run(
             &leg,
             vec![
-                Q { expires_at: 50, ..q(&leg, 4_000, 1) },
-                Q { expires_at: NOW, ..q(&leg, 3_000, 2) }, // expires_at == now is expired
+                Q {
+                    expires_at: 50,
+                    ..q(&leg, 4_000, 1)
+                },
+                Q {
+                    expires_at: NOW,
+                    ..q(&leg, 3_000, 2)
+                }, // expires_at == now is expired
             ],
         );
         assert_eq!(best, None);
@@ -127,8 +138,14 @@ mod tests {
         let (quotes, best) = run(
             &leg,
             vec![
-                Q { expires_at: ACCEPT_DEADLINE - 1, ..q(&leg, 1_000, 1) }, // cheapest but too short
-                Q { expires_at: ACCEPT_DEADLINE, ..q(&leg, 2_000, 2) },     // exactly at deadline: ok
+                Q {
+                    expires_at: ACCEPT_DEADLINE - 1,
+                    ..q(&leg, 1_000, 1)
+                }, // cheapest but too short
+                Q {
+                    expires_at: ACCEPT_DEADLINE,
+                    ..q(&leg, 2_000, 2)
+                }, // exactly at deadline: ok
             ],
         );
         assert_eq!(best, Some(quotes[1].id));
@@ -140,13 +157,25 @@ mod tests {
         let (quotes, best) = run(
             &leg,
             vec![
-                Q { size: 999, ..q(&leg, 1_000, 1) }, // cheapest but undersized
-                Q { size: 1_000, ..q(&leg, 5_000, 2) },
+                Q {
+                    size: 999,
+                    ..q(&leg, 1_000, 1)
+                }, // cheapest but undersized
+                Q {
+                    size: 1_000,
+                    ..q(&leg, 5_000, 2)
+                },
             ],
         );
         assert_eq!(best, Some(quotes[1].id));
 
-        let (_, best) = run(&leg, vec![Q { size: 1, ..q(&leg, 1_000, 1) }]);
+        let (_, best) = run(
+            &leg,
+            vec![Q {
+                size: 1,
+                ..q(&leg, 1_000, 1)
+            }],
+        );
         assert_eq!(best, None);
     }
 
@@ -154,7 +183,10 @@ mod tests {
     fn long_yes_sides_take_lowest_yes_price() {
         for side in [LegSide::BuyYes, LegSide::SellNo] {
             let leg = leg(side);
-            let (quotes, best) = run(&leg, vec![q(&leg, 4_000, 1), q(&leg, 2_500, 2), q(&leg, 3_000, 3)]);
+            let (quotes, best) = run(
+                &leg,
+                vec![q(&leg, 4_000, 1), q(&leg, 2_500, 2), q(&leg, 3_000, 3)],
+            );
             assert_eq!(best, Some(quotes[1].id), "side {side:?}");
         }
     }
@@ -163,21 +195,30 @@ mod tests {
     fn short_yes_sides_take_highest_yes_price() {
         for side in [LegSide::SellYes, LegSide::BuyNo] {
             let leg = leg(side);
-            let (quotes, best) = run(&leg, vec![q(&leg, 4_000, 1), q(&leg, 2_500, 2), q(&leg, 3_000, 3)]);
+            let (quotes, best) = run(
+                &leg,
+                vec![q(&leg, 4_000, 1), q(&leg, 2_500, 2), q(&leg, 3_000, 3)],
+            );
             assert_eq!(best, Some(quotes[0].id), "side {side:?}");
         }
     }
 
     #[test]
     fn price_tie_breaks_on_lowest_seq_not_submitted_at() {
-        for side in LegSide::ALL {
+        for side in ALL_SIDES {
             let leg = leg(side);
             // seq 2 has the *earlier* submitted_at timestamp; seq 1 must still win.
             let (quotes, best) = run(
                 &leg,
                 vec![
-                    Q { submitted_at: 90, ..q(&leg, 3_000, 2) },
-                    Q { submitted_at: 95, ..q(&leg, 3_000, 1) },
+                    Q {
+                        submitted_at: 90,
+                        ..q(&leg, 3_000, 2)
+                    },
+                    Q {
+                        submitted_at: 95,
+                        ..q(&leg, 3_000, 1)
+                    },
                 ],
             );
             assert_eq!(best, Some(quotes[1].id), "side {side:?}");
@@ -190,9 +231,18 @@ mod tests {
         let (quotes, best) = run(
             &leg,
             vec![
-                Q { state: QuoteState::Released, ..q(&leg, 1_000, 1) },
-                Q { state: QuoteState::Selected, ..q(&leg, 1_500, 2) },
-                Q { state: QuoteState::Locked, ..q(&leg, 2_000, 3) },
+                Q {
+                    state: QuoteState::Released,
+                    ..q(&leg, 1_000, 1)
+                },
+                Q {
+                    state: QuoteState::Selected,
+                    ..q(&leg, 1_500, 2)
+                },
+                Q {
+                    state: QuoteState::Locked,
+                    ..q(&leg, 2_000, 3)
+                },
                 q(&leg, 4_000, 4),
             ],
         );

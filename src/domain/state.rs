@@ -1,15 +1,14 @@
 //! Enums from the state diagrams in `docs/ARCHITECTURE.md`. Variant sets are exact.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::ids::LegId;
 
 /// Which side of the binary contract the *requester* wants on a leg.
 ///
-/// A binary contract has two economically identical ways to express each position:
-/// buying No at `1 - p` is selling Yes at `p`. Prices, collateral, and escrow are always
+/// Buying No at `1 - p` is selling Yes at `p`. Prices, collateral, and escrow are always
 /// expressed in Yes terms, so the four sides collapse onto [`LegSide::requester_buys_yes`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LegSide {
     BuyYes,
@@ -19,16 +18,13 @@ pub enum LegSide {
 }
 
 impl LegSide {
-    pub const ALL: [LegSide; 4] = [LegSide::BuyYes, LegSide::SellYes, LegSide::BuyNo, LegSide::SellNo];
-
-    /// Does the requester end up long Yes? `BuyYes` and `SellNo` → yes, the requester is the
-    /// Yes-buyer; `SellYes` and `BuyNo` → no, the maker is the Yes-buyer.
+    /// `BuyYes` and `SellNo` make the requester the Yes-buyer; `SellYes` and `BuyNo` make the
+    /// maker the Yes-buyer.
     pub const fn requester_buys_yes(self) -> bool {
         matches!(self, LegSide::BuyYes | LegSide::SellNo)
     }
 }
 
-/// Request state machine (see "Request state machine" in ARCHITECTURE.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestState {
@@ -41,14 +37,6 @@ pub enum RequestState {
     Failed,
 }
 
-impl RequestState {
-    /// `Settled`, `Unwound`, and `Failed` are terminal; a second accept/reject is a 409.
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, RequestState::Settled | RequestState::Unwound | RequestState::Failed)
-    }
-}
-
-/// Quote lifecycle (see "Quote lifecycle" in ARCHITECTURE.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuoteState {
@@ -58,9 +46,8 @@ pub enum QuoteState {
     Released,
 }
 
-/// What the oracle reports for a contract. "Unavailable / delayed" is `None` from
-/// [`crate::domain::Oracle::outcome`], not a variant here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+/// What the oracle reports. "Delayed" is the absence of a report, not a variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OracleOutcome {
     Yes,
@@ -75,28 +62,15 @@ pub enum OracleOutcome {
 pub enum FailReason {
     /// At the response deadline this leg had no eligible live quote.
     LegUnmatched(LegId),
-    /// The requester rejected the presented package.
     Rejected,
-    /// The requester neither accepted nor rejected before `accept_deadline`.
     AcceptWindowExpired,
-    /// `lock_batch` failed because the requester's free balance could not cover their side.
+    /// `lock_batch` refused because the requester's free balance could not cover their side.
     InsufficientRequesterFunds,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn terminal_states() {
-        assert!(RequestState::Settled.is_terminal());
-        assert!(RequestState::Unwound.is_terminal());
-        assert!(RequestState::Failed.is_terminal());
-        assert!(!RequestState::Open.is_terminal());
-        assert!(!RequestState::Presented.is_terminal());
-        assert!(!RequestState::Locked.is_terminal());
-        assert!(!RequestState::Disputed.is_terminal());
-    }
 
     #[test]
     fn leg_side_role() {
@@ -107,9 +81,17 @@ mod tests {
     }
 
     #[test]
-    fn leg_side_serializes_snake_case() {
-        let names: Vec<_> = LegSide::ALL.iter().map(|s| serde_json::to_value(s).unwrap()).collect();
-        assert_eq!(names, ["buy_yes", "sell_yes", "buy_no", "sell_no"]);
+    fn leg_side_round_trips_through_snake_case_wire_names() {
+        for (wire, side) in [
+            ("buy_yes", LegSide::BuyYes),
+            ("sell_yes", LegSide::SellYes),
+            ("buy_no", LegSide::BuyNo),
+            ("sell_no", LegSide::SellNo),
+        ] {
+            let parsed: LegSide = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(parsed, side);
+            assert_eq!(serde_json::to_value(side).unwrap(), wire);
+        }
     }
 
     #[test]
