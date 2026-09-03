@@ -1,8 +1,9 @@
 {
   "legs": [
-    { "contract": "A", "description": "Settles Yes if BTC/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No.", "side": "buy_yes", "notional": 1000 },
-    { "contract": "B", "description": "Settles Yes if ETH/USD on Coinbase is above 5000.00 at 2026-12-31T00:00:00Z; otherwise No.", "side": "buy_yes", "notional": 1000 },
-    { "contract": "C", "description": "Settles Yes if SOL/USD on Coinbase is above 300.00 at 2026-12-31T00:00:00Z; otherwise No.", "side": "buy_yes", "notional": 1000 }
+    { "contract": "A", "description": "Settles Yes if BTC/USD on Coinbase is above the strike 100000.00 at resolution; otherwise No.", "side": "buy_yes", "notional": 1000 },
+    { "contract": "B", "description": "Settles Yes if ETH/USD on Coinbase is above the strike 5000.00 at resolution; otherwise No.", "side": "buy_yes", "notional": 1000 },
+    { "contract": "C", "description": "Settles Yes if SOL/USD on Coinbase is above the strike 300.00 at resolution; otherwise No.", "side": "buy_yes", "notional": 1000 }
   ],
+  "tenor": "five_minutes",
   "response_deadline": "{{response_deadline}}"
 }

@@ -15,4 +15,4 @@ pub use ids::{
 };
 pub use money::{Amount, InvalidPrice, Price};
 pub use request::{EmptyLegs, Escrow, Leg, Package, Quote, RfqRequest, Selection, ZeroNotional};
-pub use state::{FailReason, LegSide, OracleOutcome, QuoteState, RequestState};
+pub use state::{FailReason, LegSide, OracleOutcome, QuoteState, RequestState, Tenor};

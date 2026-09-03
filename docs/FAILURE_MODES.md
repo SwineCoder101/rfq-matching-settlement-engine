@@ -18,6 +18,7 @@ The engine actor serialises every mutation; the ledger is reserve (quote-scoped)
 | A8 | Quote already expired when `Tick` runs | Expired quote selected, or its collateral stuck | `Tick` releases Live quotes with `expires_at ≤ now` before matching | `fm_expired_quote_not_selected_and_released` |
 | A9 | Second accept on a Locked request | Double `lock_batch` | State must be Presented → 409; no ledger call | `fm_double_accept_is_409` |
 | A10 | Accept, reject, or resolve after a terminal state | Second payout or refund | Settled/Unwound/Failed refuse everything with 409 | `fm_accept_after_terminal_is_409` |
+| A13 | Worker so late that the contracts already resolved | Requester accepts knowing the outcome | `accept_deadline = min(now + accept_window, resolves_at)`; the window is already closed, accept → 409 and Failed(`accept_window_expired`), all released | `fm_accept_window_capped_at_resolution` |
 | A11 | Identical prices on one leg | Non-deterministic winner | Ties break on engine `seq`, not `submitted_at` | `fm_tie_breaks_on_seq` |
 | P1 | Stranger accepts or rejects | Locking someone else's funds | Ownership check before state check → 403 | `fm_non_owner_cannot_accept_or_reject` |
 | P2 | Maker cancels a rival's quote | Competitor's collateral released | `quote.maker` must equal the caller → 403 | `fm_maker_cannot_cancel_others_quote` |

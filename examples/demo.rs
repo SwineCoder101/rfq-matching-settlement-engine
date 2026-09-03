@@ -9,7 +9,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 use rfq_matching_settlement_engine::domain::{
     Amount, ContractDescription, ContractId, Leg, LegSide, OracleOutcome, PartyId, Price,
-    RfqRequest,
+    RfqRequest, Tenor,
 };
 use rfq_matching_settlement_engine::engine::{Engine, EngineConfig, EngineHandle, spawn_engine};
 use rfq_matching_settlement_engine::mock::{MockClock, MockLedger};
@@ -75,7 +75,7 @@ fn leg(contract: &str, side: LegSide, notional: u64) -> Leg {
     Leg::new(
         ContractId::new(contract).unwrap(),
         ContractDescription::new(format!(
-            "Settles Yes if {contract}/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No."
+            "Settles Yes if {contract}/USD on Coinbase is above the strike 100000.00 at resolution; otherwise No."
         ))
         .unwrap(),
         side,
@@ -107,7 +107,11 @@ async fn happy_path() {
         leg("A", LegSide::BuyYes, 1_000),
         leg("B", LegSide::BuyYes, 2_000),
     ];
-    let req = v.engine.submit_request(r, legs, v.at(30)).await.unwrap();
+    let req = v
+        .engine
+        .submit_request(r, legs, Tenor::FiveMinutes, v.at(30))
+        .await
+        .unwrap();
     let (leg_a, leg_b) = (req.legs[0].id, req.legs[1].id);
     println!("  request {} opened, state {}", req.id, state(&req));
 
@@ -176,7 +180,11 @@ async fn unmatched_leg() {
         leg("B", LegSide::BuyYes, 1_000),
         leg("C", LegSide::BuyYes, 1_000),
     ];
-    let req = v.engine.submit_request(r, legs, v.at(30)).await.unwrap();
+    let req = v
+        .engine
+        .submit_request(r, legs, Tenor::FiveMinutes, v.at(30))
+        .await
+        .unwrap();
     for leg_id in [req.legs[0].id, req.legs[2].id] {
         v.engine
             .submit_quote(
@@ -216,7 +224,12 @@ async fn requester_cannot_fund() {
 
     let req = v
         .engine
-        .submit_request(r, vec![leg("A", LegSide::BuyYes, 1_000)], v.at(30))
+        .submit_request(
+            r,
+            vec![leg("A", LegSide::BuyYes, 1_000)],
+            Tenor::FiveMinutes,
+            v.at(30),
+        )
         .await
         .unwrap();
     v.engine

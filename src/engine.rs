@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use crate::clock::Clock;
 use crate::domain::{
     Amount, EmptyLegs, Escrow, FailReason, Leg, LegId, OracleOutcome, Package, PartyId, Price,
-    Quote, QuoteId, QuoteState, RequestId, RequestState, RfqRequest, Selection, Seq,
+    Quote, QuoteId, QuoteState, RequestId, RequestState, RfqRequest, Selection, Seq, Tenor,
 };
 use crate::ledger::LedgerAccount;
 use crate::ledger::{
@@ -102,6 +102,7 @@ pub(crate) enum Command {
     SubmitRequest {
         requester: PartyId,
         legs: Vec<Leg>,
+        tenor: Tenor,
         response_deadline: DateTime<Utc>,
         reply: Reply<RfqRequest>,
     },
@@ -194,10 +195,11 @@ impl Engine {
             Command::SubmitRequest {
                 requester,
                 legs,
+                tenor,
                 response_deadline,
                 reply,
             } => {
-                let _ = reply.send(self.submit_request(requester, legs, response_deadline));
+                let _ = reply.send(self.submit_request(requester, legs, tenor, response_deadline));
             }
             Command::SubmitQuote {
                 maker,
@@ -267,6 +269,7 @@ impl Engine {
         &mut self,
         requester: PartyId,
         legs: Vec<Leg>,
+        tenor: Tenor,
         response_deadline: DateTime<Utc>,
     ) -> Result<RfqRequest, EngineError> {
         let now = self.clock.now();
@@ -281,10 +284,19 @@ impl Engine {
         let summable = response_deadline
             .checked_add_signed(self.config.accept_window)
             .is_some();
-        if !within_horizon || !summable {
+        let resolves_at = response_deadline.checked_add_signed(tenor.duration());
+        let Some(resolves_at) = resolves_at.filter(|_| within_horizon && summable) else {
             return Err(EngineError::DeadlineBeyondHorizon);
-        }
-        let request = RfqRequest::open(RequestId::new(), requester, legs, response_deadline, now)?;
+        };
+        let request = RfqRequest::open(
+            RequestId::new(),
+            requester,
+            legs,
+            tenor,
+            response_deadline,
+            resolves_at,
+            now,
+        )?;
         self.requests.insert(request.id, request.clone());
         Ok(request)
     }
@@ -520,13 +532,11 @@ impl Engine {
                         q.state == QuoteState::Live && q.expires_at <= now
                     });
                     if now >= req.response_deadline {
-                        present_or_fail(
-                            ledger,
-                            reservations,
-                            req,
-                            now,
-                            now + self.config.accept_window,
-                        );
+                        // The requester may never accept once the contracts have resolved,
+                        // however late the worker is: the window ends at `resolves_at`.
+                        let accept_deadline =
+                            (now + self.config.accept_window).min(req.resolves_at);
+                        present_or_fail(ledger, reservations, req, now, accept_deadline);
                     }
                 }
                 RequestState::Presented => {
@@ -723,11 +733,13 @@ impl EngineHandle {
         &self,
         requester: PartyId,
         legs: Vec<Leg>,
+        tenor: Tenor,
         response_deadline: DateTime<Utc>,
     ) -> Result<RfqRequest, EngineError> {
         self.ask(|reply| Command::SubmitRequest {
             requester,
             legs,
+            tenor,
             response_deadline,
             reply,
         })

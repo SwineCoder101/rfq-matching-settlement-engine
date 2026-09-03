@@ -138,6 +138,33 @@ because with a horizon a near-`MAX_UTC` deadline can no longer be admitted.
 **Verify:** `cargo test` (all green, 0 ignored), then
 `cargo test --test failure_modes fm_far_future fm_response_deadline_beyond_horizon`.
 
+## Change set 7
+
+**Message:** `feat(request): tenor presets and resolves_at; accept window capped at resolution`
+
+**Colour:** GREEN; new test `fm_accept_window_capped_at_resolution`.
+
+**Files:** `src/domain/state.rs` (`Tenor`), `src/domain/mod.rs`, `src/domain/request.rs`,
+`src/engine.rs`, `src/api.rs`, `examples/demo.rs`, `tests/common/mod.rs`,
+`tests/happy_path.rs`, `tests/settlement.rs`, `tests/failure_modes.rs`, the three fixtures,
+`ASSUMPTIONS.md`, `docs/ARCHITECTURE.md`, `docs/FAILURE_MODES.md` (row A13),
+`docs/RESOLUTION.md`, this file.
+
+**What it does:** a request body now requires `tenor`, one of `five_minutes`,
+`ten_minutes`, `one_hour`, `one_day`. The engine stores it and `resolves_at =
+response_deadline + tenor` (checked add, folded into the horizon check), and both appear in
+the response. When a package is presented the accept deadline is
+`min(now + accept_window, resolves_at)`. Sample contract descriptions are reworded to name a
+strike instead of a date, since the tenor now fixes the instant.
+
+**Assumptions behind it:** contracts are short-dated event markets that resolve at a fixed
+offset from the quote window, so a preset tenor is the right shape and a free timestamp is
+not; all legs of a request share the tenor, which is what makes one outcome per request
+coherent; settlement is strike-based and the oracle applies the rule; the venue records the
+instant but runs no timer on it, which stays the delay policy's job.
+
+**Verify:** `cargo test`, `cargo run --example demo`.
+
 ## Not in this plan
 
 - X1 (self-quote): its test is removed and the behaviour is documented as allowed and

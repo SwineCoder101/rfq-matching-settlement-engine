@@ -44,6 +44,7 @@ async fn full_lifecycle_two_legs_settles_yes() {
             vars![
                 "id" => request_id, "requester" => requester, "leg_a" => leg_a, "leg_b" => leg_b,
                 "response_deadline" => ts(response_deadline), "created_at" => ts(v.now()),
+                "resolves_at" => ts(v.at(30 + common::TENOR_SECS)),
             ],
         )
     );
@@ -235,7 +236,7 @@ async fn missing_party_header_is_unauthorized() {
     let v = TestVenue::new();
     let body = fixture(
         "requests/rfq_two_leg.json",
-        vars!["response_deadline" => ts(v.at(30))],
+        vars!["response_deadline" => ts(v.at(30)), "resolves_at" => ts(v.at(30 + common::TENOR_SECS))],
     );
     let (status, json) = v.call(Method::POST, "/v1/requests", None, Some(body)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{json}");

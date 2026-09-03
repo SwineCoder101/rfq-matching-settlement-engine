@@ -41,7 +41,7 @@ The engine actor owns all requests and applies commands one at a time, so accept
 
 ### HTTP surface
 
-Identity is the `x-party-id` header. Authorization: accept or reject only your own request, cancel only your own live quote.
+Identity is the `x-party-id` header. Authorization: accept or reject only your own request, cancel only your own live quote. A request names a `tenor` preset; every leg resolves at `response_deadline + tenor`, and the accept window never extends past that instant.
 
 - `POST /v1/ledger/credit` (mock faucet), `GET /v1/ledger/{party_id}`
 - `POST /v1/requests`, `GET /v1/requests/{id}`

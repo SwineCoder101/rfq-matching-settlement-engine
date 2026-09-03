@@ -26,6 +26,9 @@ use rfq_matching_settlement_engine::engine::{Engine, EngineConfig, EngineHandle,
 use rfq_matching_settlement_engine::mock::{MockClock, MockLedger};
 
 pub const ACCEPT_WINDOW_SECS: i64 = 60;
+/// Tenor every harness request uses; contracts resolve at `response_deadline + TENOR_SECS`.
+pub const TENOR: &str = "five_minutes";
+pub const TENOR_SECS: i64 = 300;
 
 // ---------------------------------------------------------------------------------------------
 // Fixtures
@@ -69,7 +72,7 @@ pub fn ts(t: DateTime<Utc>) -> String {
 
 /// One leg for `open_request`.
 pub fn leg(side: &str, notional: u64) -> Value {
-    json!({ "contract": format!("{side}-{notional}"), "description": format!("Settles Yes if index {side}-{notional} closes above 100.00 per the venue's published source at 2026-12-31T00:00:00Z; otherwise No."), "side": side, "notional": notional })
+    json!({ "contract": format!("{side}-{notional}"), "description": format!("Settles Yes if index {side}-{notional} closes above the strike 100.00 per the venue's published source at resolution; otherwise No."), "side": side, "notional": notional })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -229,7 +232,8 @@ impl TestVenue {
         legs: Value,
         response_deadline: DateTime<Utc>,
     ) -> (StatusCode, Value) {
-        let body = json!({ "legs": legs, "response_deadline": ts(response_deadline) });
+        let body =
+            json!({ "legs": legs, "tenor": TENOR, "response_deadline": ts(response_deadline) });
         let (status, json) = self
             .call(Method::POST, "/v1/requests", Some(requester), Some(body))
             .await;
@@ -337,7 +341,7 @@ impl TestVenue {
     ) -> Value {
         let body = fixture(
             fixture_name,
-            vars!["response_deadline" => ts(response_deadline)],
+            vars!["response_deadline" => ts(response_deadline), "resolves_at" => ts(response_deadline + Duration::seconds(TENOR_SECS))],
         );
         self.create_request_body(requester, body).await
     }

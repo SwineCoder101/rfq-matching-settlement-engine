@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::domain::{
     Amount, ContractDescription, ContractId, InvalidContractDescription, InvalidContractId,
     InvalidPrice, Leg, LegId, LegSide, OracleOutcome, PartyId, Price, Quote, QuoteId, RequestId,
-    RfqRequest, ZeroNotional,
+    RfqRequest, Tenor, ZeroNotional,
 };
 use crate::engine::{EngineError, EngineHandle};
 use crate::ledger::LedgerAccount;
@@ -195,6 +195,8 @@ impl TryFrom<LegBody> for Leg {
 #[derive(Debug, Deserialize)]
 struct CreateRequestBody {
     legs: Vec<LegBody>,
+    /// Preset market length; every leg resolves at `response_deadline + tenor`.
+    tenor: Tenor,
     response_deadline: DateTime<Utc>,
 }
 
@@ -267,7 +269,7 @@ async fn create_request(
         .collect::<Result<Vec<_>, _>>()?;
     let request = app
         .engine
-        .submit_request(requester, legs, body.response_deadline)
+        .submit_request(requester, legs, body.tenor, body.response_deadline)
         .await?;
     Ok((StatusCode::CREATED, Json(request)))
 }
@@ -416,14 +418,14 @@ mod tests {
     #[test]
     fn leg_body_parses_into_domain_leg() {
         let body: LegBody = serde_json::from_str(
-            r#"{"contract":"BTC-100K","description":"Settles Yes if BTC/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No.","side":"buy_yes","notional":1000}"#,
+            r#"{"contract":"BTC-100K","description":"Settles Yes if BTC/USD on Coinbase is above the strike 100000.00 at resolution; otherwise No.","side":"buy_yes","notional":1000}"#,
         )
         .unwrap();
         let leg = Leg::try_from(body).unwrap();
         assert_eq!(leg.contract.as_str(), "BTC-100K");
         assert_eq!(
             leg.description.as_str(),
-            "Settles Yes if BTC/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No."
+            "Settles Yes if BTC/USD on Coinbase is above the strike 100000.00 at resolution; otherwise No."
         );
         assert_eq!(leg.side, LegSide::BuyYes);
         assert_eq!(leg.notional, Amount::new(1_000));

@@ -64,13 +64,13 @@ async fn settles(#[case] legs: &[LegSpec], #[case] outcome: &str, #[case] reques
         .iter()
         .enumerate()
         .map(|(i, (side, notional, _))| {
-            json!({ "contract": format!("C{i}"), "description": format!("Settles Yes if index C{i} closes above 100.00 per the venue's published source at 2026-12-31T00:00:00Z; otherwise No."), "side": side, "notional": notional })
+            json!({ "contract": format!("C{i}"), "description": format!("Settles Yes if index C{i} closes above the strike 100.00 per the venue's published source at resolution; otherwise No."), "side": side, "notional": notional })
         })
         .collect();
     let created = v
         .create_request_body(
             requester,
-            json!({ "legs": leg_bodies, "response_deadline": ts(v.at(30)) }),
+            json!({ "legs": leg_bodies, "tenor": "five_minutes", "response_deadline": ts(v.at(30)) }),
         )
         .await;
     let request_id = id_of(&created);

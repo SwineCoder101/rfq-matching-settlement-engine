@@ -332,6 +332,48 @@ async fn fm_accept_window_expiry_fails_request() {
     v.assert_conserved().await;
 }
 
+/// The accept window never outlives the contracts: a worker so late that `resolves_at` has
+/// passed presents a package the requester can no longer accept, and everyone is released.
+#[tokio::test]
+async fn fm_accept_window_capped_at_resolution() {
+    let v = TestVenue::new();
+    let s = v.three_leg_scenario().await;
+    let quotes = v.quote_all_legs(&s).await;
+    assert_eq!(
+        v.snapshot(&s.request_id).await["resolves_at"],
+        ts(v.at(RESPONSE_DEADLINE_SECS + common::TENOR_SECS))
+    );
+
+    // Worker wakes up one second after the contracts resolved.
+    v.advance_to(RESPONSE_DEADLINE_SECS + common::TENOR_SECS + 1)
+        .await;
+    let presented = v.snapshot(&s.request_id).await;
+    assert_eq!(presented["state"], "presented");
+    assert_eq!(
+        presented["accept_deadline"],
+        ts(v.at(RESPONSE_DEADLINE_SECS + common::TENOR_SECS)),
+        "window ends at resolves_at, not now + accept_window"
+    );
+
+    let (status, body) = v.accept(s.requester, &s.request_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let failed = v.snapshot(&s.request_id).await;
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(
+        failed["fail_reason"],
+        json!({ "reason": "accept_window_expired" })
+    );
+    for q in &quotes {
+        assert_quote_states(&failed, &[(q, "released")]);
+    }
+    assert_eq!(v.balances(s.requester).await, bal(3 * SIDE_LOCK, 0, 0));
+    for m in s.makers {
+        assert_eq!(v.balances(m).await, bal(SIDE_LOCK, 0, 0));
+    }
+    assert_eq!(v.ledger.lock_batch_calls(), 0);
+    v.assert_conserved().await;
+}
+
 /// REVIEW #3. The worker is not the only guard on the accept window. An accept that arrives
 /// after `accept_deadline` with no `Tick` in between must itself fail the request and hand
 /// every maker its collateral back; at the deadline instant itself, accept still succeeds.
@@ -820,7 +862,7 @@ async fn fm_tie_breaks_on_seq() {
 #[tokio::test]
 async fn fm_missing_party_header_is_401() {
     let v = TestVenue::new();
-    let body = json!({ "legs": [leg("buy_yes", LEG_NOTIONAL)], "response_deadline": ts(v.at(RESPONSE_DEADLINE_SECS)) });
+    let body = json!({ "legs": [leg("buy_yes", LEG_NOTIONAL)], "tenor": "five_minutes", "response_deadline": ts(v.at(RESPONSE_DEADLINE_SECS)) });
     let (status, json) = v.call(Method::POST, "/v1/requests", None, Some(body)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{json}");
     assert_eq!(json["code"], "missing_party");

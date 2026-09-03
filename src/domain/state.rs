@@ -46,6 +46,29 @@ pub enum QuoteState {
     Released,
 }
 
+/// How long after the response deadline the request's contracts resolve. A preset, not a
+/// free timestamp: every leg of a request resolves at the same instant, which is what makes
+/// one outcome per request coherent, and a preset cannot be malformed or centuries out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tenor {
+    FiveMinutes,
+    TenMinutes,
+    OneHour,
+    OneDay,
+}
+
+impl Tenor {
+    pub fn duration(self) -> chrono::Duration {
+        match self {
+            Tenor::FiveMinutes => chrono::Duration::minutes(5),
+            Tenor::TenMinutes => chrono::Duration::minutes(10),
+            Tenor::OneHour => chrono::Duration::hours(1),
+            Tenor::OneDay => chrono::Duration::days(1),
+        }
+    }
+}
+
 /// What the oracle reports. "Delayed" is the absence of a report, not a variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1,6 +1,20 @@
 # Resolution
 
-How escrow unlocks once a request is `Locked`, and what happens when the oracle is disputed, late, or reports that the contract cannot be resolved as written. Rows R1–R3 in `docs/FAILURE_MODES.md` pin this. The contract-text assumption this rests on is stated in `ASSUMPTIONS.md`.
+How escrow unlocks once a request is `Locked`, and what happens when the oracle is disputed, late, or reports that the contract cannot be resolved as written. Rows R1–R4 in `docs/FAILURE_MODES.md` pin this. The contract-text assumption this rests on is stated in `ASSUMPTIONS.md`.
+
+## How settlement is triggered
+
+The venue never asks anyone for an outcome. Whoever acts as the oracle pushes one:
+
+```
+POST /v1/oracle/resolve { "request_id": "...", "outcome": "yes" | "no" | "invalid" | "disputed" }
+```
+
+There is no polling, no timer, and no oracle port in the code; the oracle is a caller, like the requester and the makers. The outcome is due at the request's `resolves_at` (`response_deadline + tenor`, the same instant for every leg), and the expected rule is strike-based: `yes` if the instrument's price at that instant is above the strike named in the description, `no` otherwise. If nobody posts, the request stays `Locked` and escrow stays held (see "Delayed").
+
+The body does not say whom to pay. It says what happened, and the engine derives the payee from what it recorded at accept: each leg's escrow names a Yes-buyer and a Yes-seller, fixed by the leg's side (`buy_yes` / `sell_no` make the requester the Yes-buyer, `sell_yes` / `buy_no` make the maker the Yes-buyer). The caller cannot name a payee, choose an amount, or resolve one leg differently from another: one outcome applies to every leg of the request. The only lever is the outcome itself, and who may pull it is the authorization question `ASSUMPTIONS.md` places out of scope.
+
+Money ends in the winner's `free` balance, readable at `GET /v1/ledger/{party_id}`. There is no withdrawal step because real money movement is out of scope.
 
 ## What is locked
 
@@ -34,7 +48,7 @@ The intended policy, **not implemented**:
 - After `resolution_timeout` with no outcome: `Locked → Disputed`. A signal, not a transfer.
 - After `unwind_timeout` in `Disputed`: `Disputed → Unwound`, refund both chunks of every leg exactly as `invalid` does.
 
-Both would be `EngineConfig` fields next to `accept_window`, applied inside `Engine::tick` against a timestamp recorded when the request became `Locked`. `RfqRequest` does not record that instant yet; adding it is the first step.
+Both would be `EngineConfig` fields next to `accept_window`, applied inside `Engine::tick` against the request's `resolves_at`, which is already recorded.
 
 ## Contract text and `invalid`
 

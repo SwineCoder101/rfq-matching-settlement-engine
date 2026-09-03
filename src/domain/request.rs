@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::ids::{ContractDescription, ContractId, LegId, PartyId, QuoteId, RequestId, Seq};
 use super::money::{Amount, Price};
-use super::state::{FailReason, LegSide, QuoteState, RequestState};
+use super::state::{FailReason, LegSide, QuoteState, RequestState, Tenor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("leg notional must be greater than zero")]
@@ -131,6 +131,10 @@ pub struct RfqRequest {
     pub quotes: Vec<Quote>,
     /// Absolute. At this instant the worker either presents a package or fails the request.
     pub response_deadline: DateTime<Utc>,
+    pub tenor: Tenor,
+    /// `response_deadline + tenor`: when every leg's contract resolves and an outcome is due.
+    /// The accept window never extends past it.
+    pub resolves_at: DateTime<Utc>,
     /// Set when the request becomes `Presented`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accept_deadline: Option<DateTime<Utc>>,
@@ -150,7 +154,9 @@ impl RfqRequest {
         id: RequestId,
         requester: PartyId,
         legs: Vec<Leg>,
+        tenor: Tenor,
         response_deadline: DateTime<Utc>,
+        resolves_at: DateTime<Utc>,
         created_at: DateTime<Utc>,
     ) -> Result<Self, EmptyLegs> {
         if legs.is_empty() {
@@ -162,6 +168,8 @@ impl RfqRequest {
             legs,
             quotes: Vec::new(),
             response_deadline,
+            tenor,
+            resolves_at,
             accept_deadline: None,
             state: RequestState::Open,
             package: None,
@@ -232,7 +240,15 @@ mod tests {
     #[test]
     fn request_rejects_empty_legs() {
         assert_eq!(
-            RfqRequest::open(RequestId::new(), PartyId::new(), vec![], t(10), t(0)),
+            RfqRequest::open(
+                RequestId::new(),
+                PartyId::new(),
+                vec![],
+                Tenor::FiveMinutes,
+                t(10),
+                t(310),
+                t(0)
+            ),
             Err(EmptyLegs)
         );
     }
@@ -243,7 +259,9 @@ mod tests {
             RequestId::new(),
             PartyId::new(),
             vec![leg(LegSide::BuyYes, 1_000)],
+            Tenor::FiveMinutes,
             t(10),
+            t(310),
             t(0),
         )
         .unwrap();
@@ -337,12 +355,16 @@ mod tests {
             RequestId::new(),
             PartyId::new(),
             vec![leg(LegSide::BuyYes, 500)],
+            Tenor::FiveMinutes,
             t(10),
+            t(310),
             t(0),
         )
         .unwrap();
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["state"], "open");
+        assert_eq!(json["tenor"], "five_minutes");
+        assert_eq!(json["resolves_at"], serde_json::to_value(t(310)).unwrap());
         assert_eq!(json["legs"][0]["side"], "buy_yes");
         assert_eq!(json["legs"][0]["description"], "C resolves Yes");
         assert_eq!(json["legs"][0]["notional"], 500);
