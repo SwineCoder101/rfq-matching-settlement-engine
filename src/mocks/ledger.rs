@@ -24,6 +24,22 @@ struct Inner {
     /// Sum of every `credit` ever made. Payouts move money between parties, so the sum of all
     /// account totals must always equal this.
     total_credited: Amount,
+    /// Per-party audit trail, so tests can prove `total == credited - paid_out + received`.
+    credited: HashMap<PartyId, Amount>,
+    paid_to_others: HashMap<PartyId, Amount>,
+    received_from_others: HashMap<PartyId, Amount>,
+    /// Number of `lock_batch` attempts, successful or not.
+    lock_batch_calls: usize,
+}
+
+/// One party's row in [`MockLedger::audit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartyAudit {
+    pub party: PartyId,
+    pub account: LedgerAccount,
+    pub credited: Amount,
+    pub paid_to_others: Amount,
+    pub received_from_others: Amount,
 }
 
 impl Inner {
@@ -68,6 +84,33 @@ impl MockLedger {
         let held: Amount = inner.accounts.values().map(|a| a.total()).sum();
         held == inner.total_credited
     }
+
+    /// Test helper: sum of every party's `escrowed` bucket.
+    pub fn escrowed_total(&self) -> Amount {
+        self.lock().accounts.values().map(|a| a.escrowed).sum()
+    }
+
+    /// Test helper: how many times `lock_batch` was attempted (including refused batches).
+    pub fn lock_batch_calls(&self) -> usize {
+        self.lock().lock_batch_calls
+    }
+
+    /// Test helper: one row per party that was ever credited.
+    pub fn audit(&self) -> Vec<PartyAudit> {
+        let inner = self.lock();
+        let zero = Amount::ZERO;
+        inner
+            .credited
+            .iter()
+            .map(|(&party, &credited)| PartyAudit {
+                party,
+                account: inner.accounts.get(&party).copied().unwrap_or_default(),
+                credited,
+                paid_to_others: *inner.paid_to_others.get(&party).unwrap_or(&zero),
+                received_from_others: *inner.received_from_others.get(&party).unwrap_or(&zero),
+            })
+            .collect()
+    }
 }
 
 impl Ledger for MockLedger {
@@ -75,6 +118,7 @@ impl Ledger for MockLedger {
         let mut inner = self.lock();
         inner.account(party).free += amount;
         inner.total_credited += amount;
+        *inner.credited.entry(party).or_insert(Amount::ZERO) += amount;
     }
 
     fn reserve(&self, party: PartyId, amount: Amount) -> Result<ReservationId, InsufficientFunds> {
@@ -103,6 +147,7 @@ impl Ledger for MockLedger {
 
     fn lock_batch(&self, items: Vec<LockItem>) -> Result<Vec<EscrowHandle>, LockBatchError> {
         let mut inner = self.lock();
+        inner.lock_batch_calls += 1;
 
         // Phase 1: validate everything against a scratch view. Nothing is mutated yet.
         // Multiple `FromFree` items for one party must be covered by that party's free balance
@@ -168,6 +213,10 @@ impl Ledger for MockLedger {
         };
         inner.account(hold.party).escrowed -= hold.amount;
         inner.account(to).free += hold.amount;
+        if to != hold.party {
+            *inner.paid_to_others.entry(hold.party).or_insert(Amount::ZERO) += hold.amount;
+            *inner.received_from_others.entry(to).or_insert(Amount::ZERO) += hold.amount;
+        }
     }
 
     fn refund(&self, escrow: EscrowHandle) {

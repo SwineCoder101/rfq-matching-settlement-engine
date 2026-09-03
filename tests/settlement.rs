@@ -8,7 +8,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{Venue, assert_quote_states, bal, id_of, leg_ids, ts};
+use common::{TestVenue, assert_quote_states, bal, id_of, leg_ids, ts};
 use rstest::rstest;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -51,12 +51,12 @@ fn long_yes(side: &str) -> bool {
 #[case::odd_notional_on_no(&[("buy_yes", 7, 3_333)], "no", -2)]
 #[tokio::test]
 async fn settles(#[case] legs: &[LegSpec], #[case] outcome: &str, #[case] requester_pnl: i64) {
-    let v = Venue::start();
+    let v = TestVenue::new();
     let requester = Uuid::new_v4();
     let winner = Uuid::new_v4();
     let loser = Uuid::new_v4();
     for p in [requester, winner, loser] {
-        v.credit(p, START).await;
+        v.fund(p, START).await;
     }
 
     // ---- open ------------------------------------------------------------------------------
@@ -80,8 +80,8 @@ async fn settles(#[case] legs: &[LegSpec], #[case] outcome: &str, #[case] reques
     let (mut requester_lock, mut winner_lock) = (0, 0);
     for ((side, notional, price), leg_id) in legs.iter().zip(&leg_ids) {
         let worse = if long_yes(side) { price + 500 } else { price - 500 };
-        losing_quotes.push(v.quote(loser, &request_id, leg_id, worse, *notional, v.at(600)).await);
-        winning_quotes.push(v.quote(winner, &request_id, leg_id, *price, *notional, v.at(600)).await);
+        losing_quotes.push(v.quote_ok(loser, &request_id, leg_id, worse, *notional, v.at(600)).await);
+        winning_quotes.push(v.quote_ok(winner, &request_id, leg_id, *price, *notional, v.at(600)).await);
 
         // Yes-buyer locks p * n (truncated); Yes-seller locks the remainder.
         let yes_buyer_amount = notional * u64::from(*price) / 10_000;
@@ -98,12 +98,12 @@ async fn settles(#[case] legs: &[LegSpec], #[case] outcome: &str, #[case] reques
             "yes_buyer_amount": yes_buyer_amount, "yes_seller_amount": yes_seller_amount, "notional": notional,
         }));
     }
-    let loser_lock: u64 = START - v.balance(loser).await.free;
+    let loser_lock: u64 = START - v.balances(loser).await.free;
     assert!(loser_lock > 0, "the losing MM posted collateral too");
 
     // ---- present: the winner is selected on every leg ---------------------------------------
     v.advance_to(30).await;
-    let presented = v.get_request(&request_id).await;
+    let presented = v.snapshot(&request_id).await;
     assert_eq!(presented["state"], "presented", "{presented}");
     let selected: Vec<String> = presented["package"]["selections"]
         .as_array()
@@ -131,7 +131,7 @@ async fn settles(#[case] legs: &[LegSpec], #[case] outcome: &str, #[case] reques
     .await;
 
     // ---- resolve: zero-sum between requester and winner; loser untouched --------------------
-    let (status, settled) = v.resolve(&request_id, outcome).await;
+    let (status, settled) = v.resolve(v.oracle_party(), &request_id, outcome).await;
     assert_eq!(status, StatusCode::OK, "{settled}");
     assert_eq!(settled["state"], "settled");
     let after = |pnl: i64| u64::try_from(i64::try_from(START).unwrap() + pnl).unwrap();

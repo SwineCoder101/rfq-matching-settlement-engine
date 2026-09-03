@@ -5,5 +5,5 @@ pub mod ledger;
 pub mod oracle;
 
 pub use clock::{MockClock, SystemClock};
-pub use ledger::MockLedger;
+pub use ledger::{MockLedger, PartyAudit};
 pub use oracle::MockOracle;
