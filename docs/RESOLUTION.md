@@ -55,7 +55,7 @@ The intended policy, **not implemented**: after `resolution_timeout` past `resol
 
 ## Contract text and `invalid`
 
-Contract text is never something the venue interprets or adjudicates. A leg's `ContractDescription` must be a complete resolution rule: a measurable condition, the data source, the UTC instant it is read, and the `No` branch (`ASSUMPTIONS.md`, "contract descriptions are complete resolution rules"). The engine stores it verbatim, validates only that it is non-blank and at most 1000 characters, and treats `ContractId` and `ContractDescription` as opaque. Unclear text is the requester's cost at the time of writing, not a case the resolution design handles.
+Contract text is never something the venue interprets or adjudicates. A leg's `ContractDescription` must be a complete resolution rule: the instrument, the data source, the strike, and the `No` branch; the instant it is read is the request's `resolves_at`, not free text (`ASSUMPTIONS.md`, "contracts settle against a strike"). The engine stores it verbatim, validates only that it is non-blank and at most 1000 characters, and treats `ContractId` and `ContractDescription` as opaque. Unclear text is the requester's cost at the time of writing, not a case the resolution design handles.
 
 `invalid` therefore means one thing: the contract cannot be resolved as written, because the source no longer exists, the event was cancelled, or the reading is permanently unavailable. It unwinds immediately and each poster gets its own chunk back. Deliberately it is not a 50/50 split, which would transfer money on a contract that will never settle, and not a dispute, which is a contested but obtainable reading and keeps the request alive. `invalid` from `Disputed` behaves the same.
 

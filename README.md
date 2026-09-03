@@ -1,6 +1,6 @@
 # RFQ matching and settlement engine
 
-A permissionless request-for-quote venue for binary contracts: requesters post legs, market makers post collateralized quotes, the engine presents the best package, escrows both sides atomically on accept, and pays out on a mocked oracle outcome.
+A permissionless request-for-quote venue for binary contracts: requesters post legs, market makers post collateralized quotes, the engine presents the best package, escrows both sides atomically on accept, and pays out once an oracle outcome survives a dispute window.
 
 ## Run
 

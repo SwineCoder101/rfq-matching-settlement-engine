@@ -1,8 +1,8 @@
 # Permissionless RFQ matching and settlement
 
-A requester publishes a quote request (legs, deadline). Market makers answer with firm, collateralized quotes. At the response deadline the venue selects the best quote per leg and presents a package; the requester accepts or rejects it; on accept both sides lock into escrow in one batch; a mocked oracle outcome pays the winner.
+A requester publishes a quote request (legs, deadline). Market makers answer with firm, collateralized quotes. At the response deadline the venue selects the best quote per leg and presents a package; the requester accepts or rejects it; on accept both sides lock into escrow in one batch; an oracle outcome that survives the dispute window pays the winner.
 
-Pricing is not this system's problem. Capital is: every intermediate state holds money and every participant is adversarial. Chain, payments, and the oracle are mocked. The venue is Tokio + Axum; handlers never move funds, they send commands to one engine actor.
+Pricing is not this system's problem. Capital is: every intermediate state holds money and every participant is adversarial. Chain and payments are mocked; the oracle is whoever calls the resolve endpoint. The venue is Tokio + Axum; handlers never move funds, they send commands to one engine actor.
 
 ## Domain objects
 
@@ -38,6 +38,20 @@ Not a CLOB: no order book, no order types, no partial fills. Fill is atomic per 
 <img src="img/components.png" alt="System components" width="480">
 
 The engine actor owns all requests and applies commands one at a time, so accept, cancel, and expiry cannot interleave. Matching is pure: eligible quotes are `Live`, `size >= notional`, unexpired, and `expires_at >= accept_deadline`; long-Yes legs take the lowest Yes price, short-Yes legs the highest; ties break on engine submit order.
+
+### Time: the expiry worker and `Tick`
+
+`Tick` is the engine's heartbeat, not a price tick. The expiry worker (`src/worker.rs`) wakes every 500 ms, reads the clock, and sends `Command::Tick { now }` to the actor like any other command; in tests the worker is not started and the harness sends ticks with a chosen `now`, which is what makes every timing race reproducible. The engine never reads a clock inside a tick: deadlines are absolute, so a tick is only "compare every stored deadline against this instant". Per state (`src/engine/tick.rs`):
+
+| State | On a tick with `now` past the deadline |
+|---|---|
+| Open | release quotes past their own expiry; at `response_deadline`, present a package or fail the request |
+| Presented | past `accept_deadline`, fail and release every reservation |
+| Reported | past `dispute_deadline` with no filing, pay out the reported outcome |
+| Disputed | past `unwind_deadline` with no adjudication, refund every poster |
+| Locked, terminal | nothing; `Locked` has no timer (see `docs/RESOLUTION.md`, "Delayed") |
+
+The tick never observes prices or decides outcomes. `resolves_at` says when an outcome is due, and the tick uses it only to cap the accept window; the outcome itself arrives solely through the resolve endpoint. Because a tick is a command on the same single actor, it can never interleave with an accept or a cancel.
 
 ### HTTP surface
 
@@ -85,7 +99,7 @@ sequenceDiagram
         Req->>Eng: Resolve Yes (Locked to Reported, escrow held)
         Tick->>Eng: Tick past dispute_window, nobody filed
         Eng->>Led: payout n per leg to the Yes-buyer (Reported to Settled)
-        Eng-->>Req: 200 Settled
+        Note over Req: GET /v1/requests/{id} now shows Settled
     end
 ```
 
@@ -127,8 +141,8 @@ flowchart LR
     Reserved -->|"cancel, lose, expire, Failed"| Free
     Reserved -->|"accept: MM side"| Escrowed
     Free -->|"accept: requester side"| Escrowed
-    Escrowed -->|"Yes or No: payout to winner"| Free
-    Escrowed -->|"Invalid: refund each poster"| Free
+    Escrowed -->|"Yes or No, after the dispute window: payout to winner"| Free
+    Escrowed -->|"Invalid or unwind timeout: refund each poster"| Free
 
     classDef free fill:#dcfce7,stroke:#15803d,color:#0f172a;
     classDef held fill:#fef3c7,stroke:#b45309,color:#0f172a;
