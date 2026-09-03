@@ -134,7 +134,7 @@ async fn fm_response_deadline_in_past_rejected() {
     v.assert_conserved().await;
 }
 
-/// REVIEW #1. A response deadline centuries out is not a request the venue can honour: it
+/// A response deadline centuries out is not a request the venue can honour: it
 /// must be refused at the door, with nothing stored.
 #[tokio::test]
 async fn fm_response_deadline_beyond_horizon_rejected() {
@@ -158,7 +158,7 @@ async fn fm_response_deadline_beyond_horizon_rejected() {
     v.assert_conserved().await;
 }
 
-/// REVIEW #1. A deadline near the end of representable time is refused at the door, and the
+/// A deadline near the end of representable time is refused at the door, and the
 /// venue keeps serving everyone else afterwards.
 #[tokio::test]
 async fn fm_far_future_deadline_cannot_kill_engine() {

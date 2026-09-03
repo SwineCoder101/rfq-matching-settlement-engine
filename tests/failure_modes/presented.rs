@@ -344,7 +344,7 @@ async fn fm_accept_window_expiry_fails_request() {
     v.assert_conserved().await;
 }
 
-/// REVIEW #3. The worker is not the only guard on the accept window. An accept that arrives
+/// The worker is not the only guard on the accept window. An accept that arrives
 /// after `accept_deadline` with no `Tick` in between must itself fail the request and hand
 /// every maker its collateral back; at the deadline instant itself, accept still succeeds.
 #[tokio::test]

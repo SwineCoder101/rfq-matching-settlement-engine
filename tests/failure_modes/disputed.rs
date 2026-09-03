@@ -32,7 +32,7 @@ async fn fm_disputed_then_yes_pays_out() {
     v.assert_conserved().await;
 }
 
-/// REVIEW #7. Every exit from Disputed other than `yes` (that is R2): a repeated `disputed`
+/// Every exit from Disputed other than `yes` (that is R2): a repeated `disputed`
 /// changes nothing, `no` pays each leg to its Yes-seller, `invalid` refunds each poster its
 /// own chunk. Three legs, all `buy_yes`, so the requester is the Yes-buyer on every leg.
 #[tokio::test]
