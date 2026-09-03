@@ -17,8 +17,9 @@ cargo run                     # serve on 127.0.0.1:3000 (override with RFQ_ADDR)
 | `src/domain/` | value types (`ids`, `money`), enums (`state`), aggregates and invariants (`request`) |
 | `src/matching.rs` | the one pure best-quote function |
 | `src/engine.rs` | commands, the request state machine, and the actor that serializes it |
-| `src/ledger.rs` | the `Ledger` port and its in-memory implementation |
-| `src/clock.rs` | the `Clock` port, system and mock implementations |
+| `src/ledger.rs` | the `Ledger` port |
+| `src/clock.rs` | the `Clock` port and the system clock |
+| `src/mock/` | in-memory `MockLedger` and `MockClock` |
 | `src/api.rs` | Axum router, `x-party-id` extractor, bodies, error mapping |
 | `src/worker.rs` | periodic `Tick` to the engine |
 | `tests/` | HTTP-level scenarios over a frozen clock; `common/` is the harness |

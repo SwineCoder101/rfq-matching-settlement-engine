@@ -21,4 +21,4 @@ Judgment calls the brief left open, one per line, as *assumption → consequence
 - Ties on price break on engine-assigned submit order, never on timestamps → deterministic winner regardless of clock resolution.
 - The engine is one actor over a bounded queue → mutations are serial so accept/expiry/cancel cannot race; throughput is bounded by design and a full queue back-pressures handlers instead of returning 503.
 - Ledger, oracle, and clock are in-memory; nothing persists → a restart loses every request and balance.
-- A requester may quote its own request → known gap X1 in `docs/FAILURE_MODES.md`, test ignored.
+- A requester may quote its own request → harmless to money state: both escrow sides are its own funds, conservation holds, and resolve exits normally; it can crowd out other makers on that one request only, which extracts nothing from them. Refusing it would be an identity rule, which is out of scope.

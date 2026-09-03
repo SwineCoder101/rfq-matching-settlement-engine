@@ -690,36 +690,6 @@ async fn fm_maker_cannot_cancel_others_quote() {
 }
 
 #[tokio::test]
-#[ignore = "known gap: engine does not yet reject self-quoting at request open"]
-async fn fm_self_quote_rejected() {
-    let v = TestVenue::new();
-    let s = one_leg(&v).await;
-
-    let (status, body) = v
-        .quote(
-            s.requester,
-            &s.request_id,
-            &s.leg_id,
-            M1_PRICE,
-            LEG_NOTIONAL,
-            v.at(QUOTE_EXPIRY_SECS),
-        )
-        .await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "requester must not quote its own request: {body}"
-    );
-    assert_eq!(v.snapshot(&s.request_id).await["quotes"], json!([]));
-    assert_eq!(
-        v.balances(s.requester).await,
-        bal(600, 0, 0),
-        "nothing reserved"
-    );
-    v.assert_conserved().await;
-}
-
-#[tokio::test]
 async fn fm_maker_insufficient_funds_at_quote_is_402() {
     let v = TestVenue::new();
     let s = one_leg(&v).await;

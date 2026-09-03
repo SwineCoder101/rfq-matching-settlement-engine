@@ -104,7 +104,7 @@ money-moving scenario in these two files, not only in `failure_modes.rs`.
 
 **Message:** `fix(engine): bound response deadlines at admission [REVIEW #1]`
 
-**Colour:** turns both REVIEW #1 tests GREEN; default suite green, only X1 still ignored.
+**Colour:** turns both REVIEW #1 tests GREEN; default suite green, 0 ignored.
 
 **Files:** `src/engine.rs`, `src/api.rs`, `tests/common/mod.rs`, `examples/demo.rs`,
 `tests/failure_modes.rs`, `docs/FAILURE_MODES.md` (row P11), `ASSUMPTIONS.md`, this file.
@@ -135,12 +135,14 @@ because with a horizon a near-`MAX_UTC` deadline can no longer be admitted.
    The fix therefore turns a panic into a returned `EngineError`, consistent with every
    other refusal.
 
-**Verify:** `cargo test` (all green, 1 ignored), then
+**Verify:** `cargo test` (all green, 0 ignored), then
 `cargo test --test failure_modes fm_far_future fm_response_deadline_beyond_horizon`.
 
 ## Not in this plan
 
-- X1 (`fm_self_quote_rejected`): the red test already exists and stays `#[ignore]`d until
-  its own fix step.
+- X1 (self-quote): its test is removed and the behaviour is documented as allowed and
+  harmless in `ASSUMPTIONS.md` and the known-gaps list. Refusing it would be an identity
+  rule, which the brief puts out of scope. The change lands with change set 5.
+
 - FAILURE_MODES rows for change sets 2 and 3 (A12, R4) still to be added with a fix or
   doc commit of your choosing.

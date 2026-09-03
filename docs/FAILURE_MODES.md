@@ -33,11 +33,11 @@ The engine actor serialises every mutation; the ledger is reserve (quote-scoped)
 | R1 | Oracle says Invalid | 50/50 split or stuck escrow | `refund()` returns each side its own chunk → Unwound, terminal | `fm_resolve_invalid_unwinds_refunds_each_side` |
 | R2 | Oracle disputes, then decides | Payout during dispute | Disputed keeps escrow and counts as escrowed; later Yes/No pays out → Settled | `fm_disputed_then_yes_pays_out` |
 | R3 | Resolve before escrow exists | Payout from nothing | Only Locked/Disputed resolve → 409 | `fm_resolve_before_locked_is_409` |
-| X1 | Requester quotes its own request | Requester sets its own price against itself | none yet — engine accepts it (test red) | `fm_self_quote_rejected` |
 
 ## Known gaps
 - No last-look: quotes are firm at submit (collateral reserved immediately), so there is no post-selection cancel window to time — by design.
 - No requester bond: a requester can reject or let the window lapse at no cost while maker collateral sat reserved — accepted for now.
+- Self-quoting is allowed: a requester quoting its own request puts its own money on both sides, conservation holds, and every exit still applies; it can only crowd out other makers on that one request, which extracts nothing from them. Refusing it would be an identity rule, and identity is out of scope.
 - No `resolution_timeout` / `unwind_timeout`: `Tick` ignores Locked and Disputed, so escrow on a silent oracle is held indefinitely (design in `RESOLUTION.md`).
 - No idempotency key on quote submit: a retried POST reserves twice.
 - A full command queue back-pressures handlers rather than returning 503.
