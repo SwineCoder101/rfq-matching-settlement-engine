@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/requests/{id}/quotes", post(submit_quote))
         .route("/v1/requests/{id}/accept", post(accept))
         .route("/v1/requests/{id}/reject", post(reject))
+        .route("/v1/requests/{id}/dispute", post(dispute))
         .route("/v1/quotes/{id}", delete(cancel_quote))
         .route("/v1/oracle/resolve", post(resolve))
         .with_state(state)
@@ -332,6 +333,14 @@ async fn reject(
     Ok(Json(
         app.engine.reject(requester, RequestId::from(id)).await?,
     ))
+}
+
+async fn dispute(
+    State(app): State<AppState>,
+    Party(party): Party,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<RfqRequest>> {
+    Ok(Json(app.engine.dispute(party, RequestId::from(id)).await?))
 }
 
 async fn resolve(

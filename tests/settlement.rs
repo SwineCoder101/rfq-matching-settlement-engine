@@ -148,9 +148,7 @@ async fn settles(#[case] legs: &[LegSpec], #[case] outcome: &str, #[case] reques
     .await;
 
     // ---- resolve: zero-sum between requester and winner; loser untouched --------------------
-    let (status, settled) = v.resolve(&request_id, outcome).await;
-    assert_eq!(status, StatusCode::OK, "{settled}");
-    assert_eq!(settled["state"], "settled");
+    v.resolve_final(&request_id, outcome).await;
     let after = |pnl: i64| u64::try_from(i64::try_from(START).unwrap() + pnl).unwrap();
     v.assert_balances(&[
         ("requester", requester, bal(after(requester_pnl), 0, 0)),

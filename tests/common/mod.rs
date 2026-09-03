@@ -29,6 +29,10 @@ pub const ACCEPT_WINDOW_SECS: i64 = 60;
 /// Tenor every harness request uses; contracts resolve at `response_deadline + TENOR_SECS`.
 pub const TENOR: &str = "five_minutes";
 pub const TENOR_SECS: i64 = 300;
+/// Dispute window and unwind timeout the dispute tests assume; the implementation wires
+/// them into `EngineConfig` here.
+pub const DISPUTE_WINDOW_SECS: i64 = 60;
+pub const UNWIND_TIMEOUT_SECS: i64 = 600;
 
 // ---------------------------------------------------------------------------------------------
 // Fixtures
@@ -119,6 +123,8 @@ impl TestVenue {
             clock.clone(),
             EngineConfig {
                 accept_window: Duration::seconds(ACCEPT_WINDOW_SECS),
+                dispute_window: Duration::seconds(DISPUTE_WINDOW_SECS),
+                unwind_timeout: Duration::seconds(UNWIND_TIMEOUT_SECS),
                 ..EngineConfig::default()
             },
         );
@@ -297,6 +303,17 @@ impl TestVenue {
         .await
     }
 
+    /// `POST /v1/requests/{id}/dispute` as `party`.
+    pub async fn dispute(&self, party: Uuid, request_id: &str) -> (StatusCode, Value) {
+        self.call(
+            Method::POST,
+            &format!("/v1/requests/{request_id}/dispute"),
+            Some(party),
+            None,
+        )
+        .await
+    }
+
     pub async fn resolve(&self, request_id: &str, outcome: &str) -> (StatusCode, Value) {
         let body = json!({ "request_id": request_id, "outcome": outcome });
         self.call(Method::POST, "/v1/oracle/resolve", None, Some(body))
@@ -356,6 +373,19 @@ impl TestVenue {
         json
     }
 
+    /// Resolve `outcome`, assert it is only reported, tick past the dispute window with no
+    /// filing, and return the settled snapshot.
+    pub async fn resolve_final(&self, request_id: &str, outcome: &str) -> Value {
+        let (status, reported) = self.resolve(request_id, outcome).await;
+        assert_eq!(status, StatusCode::OK, "{reported}");
+        assert_eq!(reported["state"], "reported", "{reported}");
+        self.set(self.now() + Duration::seconds(DISPUTE_WINDOW_SECS + 1));
+        self.tick().await;
+        let settled = self.snapshot(request_id).await;
+        assert_eq!(settled["state"], "settled", "{settled}");
+        settled
+    }
+
     /// `GET /v1/requests/{id}`; asserts 200.
     pub async fn snapshot(&self, id: &str) -> Value {
         let (status, json) = self.get_request(id).await;
@@ -406,7 +436,7 @@ impl TestVenue {
         let mut expected_escrow = 0u64;
         for id in ids {
             let r = self.snapshot(&id).await;
-            if r["state"] == "locked" || r["state"] == "disputed" {
+            if ["locked", "reported", "disputed"].contains(&r["state"].as_str().unwrap()) {
                 expected_escrow += r["escrows"]
                     .as_array()
                     .unwrap()
@@ -518,6 +548,16 @@ pub fn leg_ids(request: &Value) -> Vec<String> {
         .unwrap()
         .iter()
         .map(id_of)
+        .collect()
+}
+
+/// Quote ids of the presented package, in leg order.
+pub fn selections(r: &Value) -> Vec<String> {
+    r["package"]["selections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["quote_id"].as_str().unwrap().to_owned())
         .collect()
 }
 

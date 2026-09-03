@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::ids::{ContractDescription, ContractId, LegId, PartyId, QuoteId, RequestId, Seq};
 use super::money::{Amount, Price};
-use super::state::{FailReason, LegSide, QuoteState, RequestState, Tenor};
+use super::state::{FailReason, LegSide, OracleOutcome, QuoteState, RequestState, Tenor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("leg notional must be greater than zero")]
@@ -144,6 +144,16 @@ pub struct RfqRequest {
     pub package: Option<Package>,
     /// Non-empty only from `Locked` onward.
     pub escrows: Vec<Escrow>,
+    /// The oracle's `Yes` / `No`, held while `Reported`; paid out when the window closes
+    /// unfiled, or replaced by adjudication after a dispute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_outcome: Option<OracleOutcome>,
+    /// Set when `Reported`: a party may file a dispute up to and including this instant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dispute_deadline: Option<DateTime<Utc>>,
+    /// Set when `Disputed`: without adjudication by this instant, every poster is refunded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unwind_deadline: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_reason: Option<FailReason>,
     pub created_at: DateTime<Utc>,
@@ -174,6 +184,9 @@ impl RfqRequest {
             state: RequestState::Open,
             package: None,
             escrows: Vec::new(),
+            reported_outcome: None,
+            dispute_deadline: None,
+            unwind_deadline: None,
             fail_reason: None,
             created_at,
         })

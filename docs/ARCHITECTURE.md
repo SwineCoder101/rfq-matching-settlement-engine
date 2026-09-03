@@ -41,12 +41,12 @@ The engine actor owns all requests and applies commands one at a time, so accept
 
 ### HTTP surface
 
-Identity is the `x-party-id` header. Authorization: accept or reject only your own request, cancel only your own live quote. A request names a `tenor` preset; every leg resolves at `response_deadline + tenor`, and the accept window never extends past that instant.
+Identity is the `x-party-id` header. Authorization: accept or reject only your own request, cancel only your own live quote, dispute only a request you are the requester of or locked into as a maker. A request names a `tenor` preset; every leg resolves at `response_deadline + tenor`, and the accept window never extends past that instant.
 
 - `POST /v1/ledger/credit` (mock faucet), `GET /v1/ledger/{party_id}`
 - `POST /v1/requests`, `GET /v1/requests/{id}`
 - `POST /v1/requests/{id}/quotes`, `DELETE /v1/quotes/{id}`
-- `POST /v1/requests/{id}/accept`, `POST /v1/requests/{id}/reject`
+- `POST /v1/requests/{id}/accept`, `POST /v1/requests/{id}/reject`, `POST /v1/requests/{id}/dispute`
 - `POST /v1/oracle/resolve`
 
 ## Happy path
@@ -82,8 +82,9 @@ sequenceDiagram
         Eng->>Led: lock_batch all legs
         Eng->>Led: release losing quotes
         Eng-->>Req: 200 Locked
-        Req->>Eng: Resolve Yes
-        Eng->>Led: payout n per leg to the Yes-buyer
+        Req->>Eng: Resolve Yes (Locked to Reported, escrow held)
+        Tick->>Eng: Tick past dispute_window, nobody filed
+        Eng->>Led: payout n per leg to the Yes-buyer (Reported to Settled)
         Eng-->>Req: 200 Settled
     end
 ```
@@ -143,9 +144,10 @@ flowchart LR
 - **Open**: requester stays free (price unknown). Every live quote has maker collateral reserved.
 - **Presented**: selected quotes are firm (no cancel). Unselected quotes stay reserved until accept, reject, or window expiry so the same collateral cannot be spent into another RFQ meanwhile.
 - **Locked**: selected reservations plus the requester's free balance move to escrow in one batch, or nothing moves. Losers are released.
+- **Reported / Disputed**: escrow unchanged; a timer or an adjudication decides which way it goes.
 - **Settled**: escrow pays `n` per leg to the winner. **Unwound / Failed**: every hold returns to its poster.
 
-Conservation: per party, `free + reserved + escrowed` equals credits minus paid out plus received. Venue-wide, escrowed equals the notionals of `Locked` and `Disputed` requests. The tests assert both after every scenario.
+Conservation: per party, `free + reserved + escrowed` equals credits minus paid out plus received. Venue-wide, escrowed equals the notionals of `Locked`, `Reported`, and `Disputed` requests. The tests assert both after every scenario.
 
 ## Request state machine
 
@@ -157,11 +159,13 @@ stateDiagram-v2
     Open --> Failed: Tick, any leg unmatched
     Presented --> Locked: Accept, lock_batch succeeds
     Presented --> Failed: Reject, accept window expiry, or requester cannot fund lock_batch
-    Locked --> Settled: Resolve Yes or No
+    Locked --> Reported: Resolve Yes or No, escrow held
     Locked --> Disputed: Resolve Disputed
     Locked --> Unwound: Resolve Invalid
+    Reported --> Settled: Tick past dispute_window, no filing
+    Reported --> Disputed: requester or locked maker files
     Disputed --> Settled: Resolve Yes or No
-    Disputed --> Unwound: Resolve Invalid
+    Disputed --> Unwound: Resolve Invalid, or Tick past unwind_timeout
     Failed --> [*]
     Settled --> [*]
     Unwound --> [*]
@@ -171,12 +175,12 @@ stateDiagram-v2
     classDef done fill:#dcfce7,stroke:#15803d,color:#0f172a
     classDef undone fill:#fee2e2,stroke:#b91c1c,color:#0f172a
     class Open,Presented inflight
-    class Locked,Disputed held
+    class Locked,Reported,Disputed held
     class Settled done
     class Failed,Unwound undone
 ```
 
-`Settled`, `Unwound`, and `Failed` are terminal: any further accept, reject, or resolve is `409`. `Locked` and `Disputed` have no timer today; see `docs/RESOLUTION.md`.
+`Settled`, `Unwound`, and `Failed` are terminal: any further accept, reject, resolve, or dispute is `409`. `Locked` has no timer; `Reported` and `Disputed` do. See `docs/RESOLUTION.md`.
 
 ### Quote lifecycle
 

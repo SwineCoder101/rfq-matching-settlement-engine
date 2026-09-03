@@ -30,6 +30,12 @@ pub struct EngineConfig {
     /// How far past the venue clock a `response_deadline` may be. Bounds how long maker
     /// collateral can sit reserved and keeps every later deadline sum representable.
     pub max_response_horizon: Duration,
+    /// After the oracle reports `Yes` / `No`, how long a party may file a dispute before the
+    /// reported outcome pays out.
+    pub dispute_window: Duration,
+    /// After a dispute is filed, how long adjudication may take before every poster is
+    /// refunded instead.
+    pub unwind_timeout: Duration,
 }
 
 impl Default for EngineConfig {
@@ -37,6 +43,8 @@ impl Default for EngineConfig {
         Self {
             accept_window: Duration::seconds(60),
             max_response_horizon: Duration::days(365),
+            dispute_window: Duration::seconds(60),
+            unwind_timeout: Duration::days(1),
         }
     }
 }
@@ -133,6 +141,11 @@ pub(crate) enum Command {
     Resolve {
         request_id: RequestId,
         outcome: OracleOutcome,
+        reply: Reply<RfqRequest>,
+    },
+    Dispute {
+        party: PartyId,
+        request_id: RequestId,
         reply: Reply<RfqRequest>,
     },
     GetRequest {
@@ -240,6 +253,13 @@ impl Engine {
                 reply,
             } => {
                 let _ = reply.send(self.resolve(request_id, outcome));
+            }
+            Command::Dispute {
+                party,
+                request_id,
+                reply,
+            } => {
+                let _ = reply.send(self.dispute(party, request_id));
             }
             Command::GetRequest { request_id, reply } => {
                 let _ = reply.send(
@@ -470,61 +490,79 @@ impl Engine {
         Ok(req.clone())
     }
 
-    /// `Locked | Disputed → Settled | Unwound | Disputed`.
+    /// `Locked → Reported | Disputed | Unwound`, `Disputed → Settled | Unwound`. A `Yes` / `No`
+    /// from `Locked` is only reported: money moves when the dispute window closes unfiled, or
+    /// on adjudication after a dispute. A report cannot be overwritten, only disputed.
     fn resolve(
         &mut self,
         request_id: RequestId,
         outcome: OracleOutcome,
     ) -> Result<RfqRequest, EngineError> {
+        let now = self.clock.now();
         let req = self
             .requests
             .get_mut(&request_id)
             .ok_or(EngineError::NotFound)?;
-        if !matches!(req.state, RequestState::Locked | RequestState::Disputed) {
-            return Err(EngineError::WrongState {
-                expected: RequestState::Locked,
-                actual: req.state,
-            });
-        }
-        match outcome {
-            OracleOutcome::Yes | OracleOutcome::No => {
-                for escrow in &req.escrows {
-                    let handles = self
-                        .escrows
-                        .remove(&(req.id, escrow.leg_id))
-                        .expect("Locked leg holds escrow");
-                    let winner = if outcome == OracleOutcome::Yes {
-                        escrow.yes_buyer
-                    } else {
-                        escrow.yes_seller
-                    };
-                    self.ledger.payout(handles.yes_buyer, winner);
-                    self.ledger.payout(handles.yes_seller, winner);
-                }
-                req.state = RequestState::Settled;
+        let wrong_state = EngineError::WrongState {
+            expected: RequestState::Locked,
+            actual: req.state,
+        };
+        match (req.state, outcome) {
+            (RequestState::Locked, OracleOutcome::Yes | OracleOutcome::No) => {
+                req.reported_outcome = Some(outcome);
+                req.dispute_deadline = Some(now + self.config.dispute_window);
+                req.state = RequestState::Reported;
             }
-            OracleOutcome::Invalid => {
-                for escrow in &req.escrows {
-                    let handles = self
-                        .escrows
-                        .remove(&(req.id, escrow.leg_id))
-                        .expect("Locked leg holds escrow");
-                    self.ledger.refund(handles.yes_buyer);
-                    self.ledger.refund(handles.yes_seller);
-                }
-                req.state = RequestState::Unwound;
+            (RequestState::Locked, OracleOutcome::Disputed) => {
+                req.unwind_deadline = Some(now + self.config.unwind_timeout);
+                req.state = RequestState::Disputed;
             }
-            OracleOutcome::Disputed => req.state = RequestState::Disputed,
+            (RequestState::Locked | RequestState::Disputed, OracleOutcome::Invalid) => {
+                unwind(&*self.ledger, &mut self.escrows, req);
+            }
+            (RequestState::Disputed, OracleOutcome::Yes | OracleOutcome::No) => {
+                settle(&*self.ledger, &mut self.escrows, req, outcome);
+            }
+            (RequestState::Disputed, OracleOutcome::Disputed) => {}
+            _ => return Err(wrong_state),
         }
         Ok(req.clone())
     }
 
+    /// `Reported → Disputed`: the requester or a maker locked into the request holds the
+    /// reported outcome back for adjudication. Moves nothing.
+    fn dispute(
+        &mut self,
+        party: PartyId,
+        request_id: RequestId,
+    ) -> Result<RfqRequest, EngineError> {
+        let now = self.clock.now();
+        let req = self
+            .requests
+            .get_mut(&request_id)
+            .ok_or(EngineError::NotFound)?;
+        let is_party = party == req.requester
+            || req
+                .quotes
+                .iter()
+                .any(|q| q.maker == party && q.state == QuoteState::Locked);
+        if !is_party {
+            return Err(EngineError::NotOwner);
+        }
+        expect_state(req, RequestState::Reported)?;
+        req.unwind_deadline = Some(now + self.config.unwind_timeout);
+        req.state = RequestState::Disputed;
+        Ok(req.clone())
+    }
+
     /// `Open → Presented | Failed` at the response deadline; `Presented → Failed` once the
-    /// accept window closes. Expired `Live` quotes are released first so they cannot be
-    /// selected. Locked and Disputed have no timer.
+    /// accept window closes; `Reported → Settled` once the dispute window closes unfiled;
+    /// `Disputed → Unwound` once the unwind timeout passes. Expired `Live` quotes are
+    /// released first so they cannot be selected. `Locked` has no timer.
     fn tick(&mut self, now: DateTime<Utc>) {
         let ledger = &*self.ledger;
         let reservations = &mut self.reservations;
+        let escrows = &mut self.escrows;
         for req in self.requests.values_mut() {
             match req.state {
                 RequestState::Open => {
@@ -548,14 +586,70 @@ impl Engine {
                         fail_request(ledger, reservations, req, FailReason::AcceptWindowExpired);
                     }
                 }
+                RequestState::Reported => {
+                    let deadline = req
+                        .dispute_deadline
+                        .expect("a Reported request always has a dispute deadline");
+                    if now > deadline {
+                        let outcome = req
+                            .reported_outcome
+                            .expect("a Reported request always has an outcome");
+                        settle(ledger, escrows, req, outcome);
+                    }
+                }
+                RequestState::Disputed => {
+                    if let Some(deadline) = req.unwind_deadline
+                        && now > deadline
+                    {
+                        unwind(ledger, escrows, req);
+                    }
+                }
                 RequestState::Locked
-                | RequestState::Disputed
                 | RequestState::Settled
                 | RequestState::Unwound
                 | RequestState::Failed => {}
             }
         }
     }
+}
+
+/// Pay every leg's two chunks to that leg's winner and finish the request. The handles
+/// are consumed, so this can only ever run once per leg.
+fn settle(
+    ledger: &dyn Ledger,
+    escrows: &mut HashMap<(RequestId, LegId), LegEscrow>,
+    req: &mut RfqRequest,
+    outcome: OracleOutcome,
+) {
+    for escrow in &req.escrows {
+        let handles = escrows
+            .remove(&(req.id, escrow.leg_id))
+            .expect("Locked leg holds escrow");
+        let winner = if outcome == OracleOutcome::Yes {
+            escrow.yes_buyer
+        } else {
+            escrow.yes_seller
+        };
+        ledger.payout(handles.yes_buyer, winner);
+        ledger.payout(handles.yes_seller, winner);
+    }
+    req.state = RequestState::Settled;
+}
+
+/// Refund every leg's two chunks to their posters and finish the request.
+fn unwind(
+    ledger: &dyn Ledger,
+    escrows: &mut HashMap<(RequestId, LegId), LegEscrow>,
+    req: &mut RfqRequest,
+) {
+    for escrow in &req.escrows {
+        let handles = escrows
+            .remove(&(req.id, escrow.leg_id))
+            .expect("Locked leg holds escrow");
+        ledger.refund(handles.yes_buyer);
+        ledger.refund(handles.yes_seller);
+    }
+    req.state = RequestState::Unwound;
 }
 
 fn expect_state(req: &RfqRequest, expected: RequestState) -> Result<(), EngineError> {
@@ -810,6 +904,19 @@ impl EngineHandle {
         self.ask(|reply| Command::Resolve {
             request_id,
             outcome,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn dispute(
+        &self,
+        party: PartyId,
+        request_id: RequestId,
+    ) -> Result<RfqRequest, EngineError> {
+        self.ask(|reply| Command::Dispute {
+            party,
+            request_id,
             reply,
         })
         .await

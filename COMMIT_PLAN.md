@@ -165,6 +165,79 @@ instant but runs no timer on it, which stays the delay policy's job.
 
 **Verify:** `cargo test`, `cargo run --example demo`.
 
+## Change set 8
+
+**Message:** `test(fm): dispute window with delayed finality [RESOLUTION design] [red]`
+
+**Colour on first run:** RED (all seven), ignored in the default suite with
+`#[ignore = "dispute window: implementation pending"]`.
+
+**Files:** `tests/failure_modes.rs` (new section at the end), `tests/common/mod.rs`
+(`DISPUTE_WINDOW_SECS`, `UNWIND_TIMEOUT_SECS`, `dispute()` helper), this file.
+
+**Tests and what each pins:**
+- `fm_report_does_not_pay_out`: `yes` from Locked → state `reported`, `reported_outcome`,
+  `dispute_deadline = now + dispute_window`, escrow untouched.
+- `fm_unfiled_report_settles_after_window`: still `reported` at the deadline instant; first
+  tick past it settles the reported outcome once; a later filing is 409.
+- `fm_stranger_cannot_dispute`: a stranger and a maker whose quote lost are 403 `not_owner`.
+- `fm_party_dispute_holds_escrow`: requester or a locked maker files → `disputed`,
+  `unwind_deadline = now + unwind_timeout`, nothing moves, the old window no longer settles
+  it, a second filing is 409.
+- `fm_adjudication_settles_or_unwinds_once`: from Disputed, `no` pays the Yes-sellers and
+  `invalid` refunds each poster, immediately and once; any further resolve or filing is 409.
+- `fm_unwind_timeout_refunds_each_poster`: still `disputed` at the unwind instant; first tick
+  past it refunds each poster once; later resolve is 409.
+- `fm_dispute_only_while_reported`: filing while Open, Presented, or Locked is 409; a second
+  resolve while Reported is 409 and the report is unchanged.
+
+**Why red today:** `POST /v1/requests/{id}/dispute` does not exist (404), and `yes` / `no`
+from Locked pays out in the same command and goes straight to `settled`.
+
+**Verify:** `cargo test` (green, 7 ignored) and
+`cargo test --test failure_modes -- --ignored fm_` (7 failed, expected).
+
+## Change set 9
+
+**Message:** `feat(engine): dispute window with delayed finality; failure-mode tests grouped by state`
+
+**Status:** implemented; all seven dispute tests green, suite green with 0 ignored.
+
+**Also in this set:** `tests/failure_modes.rs` split into `tests/failure_modes/{main,scenarios,open,presented,locked,reported,disputed}.rs`, one module per request state, and the three-leg baseline moved to `tests/happy_path.rs` as `three_legs_three_makers_settle_yes`. Other test names are unchanged, so the FAILURE_MODES rows still resolve.
+
+**Shape:**
+- `RequestState::Reported`; `RfqRequest` gains `reported_outcome: Option<OracleOutcome>`,
+  `dispute_deadline: Option<DateTime<Utc>>`, `unwind_deadline: Option<DateTime<Utc>>`, all
+  skipped when absent.
+- `EngineConfig` gains `dispute_window` and `unwind_timeout`; the harness passes 60 s and
+  600 s (`tests/common/mod.rs` constants), the demo and `main` use defaults.
+- `Resolve` from Locked with `yes` / `no` → Reported, no ledger call. `invalid` from Locked
+  → Unwound as today. `disputed` from Locked → Disputed with an unwind deadline (oracle-
+  initiated dispute, keeps R2 and R4 valid). Any resolve while Reported → 409.
+- New `Command::Dispute { party, request_id }` and `POST /v1/requests/{id}/dispute` with
+  the `Party` extractor: state must be Reported (409), party must be the requester or the
+  maker of a `Locked` quote (403 `not_owner`); → Disputed, `unwind_deadline` set, no ledger
+  call.
+- From Disputed, `yes` / `no` settles and `invalid` unwinds immediately (as today).
+- `Tick`: Reported past `dispute_deadline` (`now > deadline`) → settle the reported outcome;
+  Disputed past `unwind_deadline` → refund each poster. Both use the existing per-leg
+  payout / refund loops, so money still moves exactly once per leg.
+- Boundaries match the accept window: allowed at the deadline instant, closed after it.
+
+**Existing tests to update in the same commit** (they assume `yes` / `no` from Locked pays
+out immediately): `fm_happy_path_three_legs`, `fm_accept_after_terminal_is_409`,
+`full_lifecycle_two_legs_settles_yes`, the `settles` matrix in `tests/settlement.rs`, and
+`examples/demo.rs`. Each becomes resolve, then `advance_to` past the dispute window, then
+the same balance assertions. `fm_disputed_then_yes_pays_out`, `fm_disputed_exits`,
+`fm_resolve_invalid_unwinds_refunds_each_side`, and `fm_resolve_before_locked_is_409` are
+unaffected.
+
+**Docs in the same commit:** `docs/RESOLUTION.md` "Disputed" becomes the implemented
+mechanism (drop the "designed, not implemented" framing, keep the bond as the open cost);
+`docs/ARCHITECTURE.md` state diagram gains `Reported` and the `dispute` route;
+`docs/FAILURE_MODES.md` gains one row per test above (D1–D7) and drops the party-dispute
+known-gap line; `ASSUMPTIONS.md` gains one line on delayed finality and free filing.
+
 ## Not in this plan
 
 - X1 (self-quote): its test is removed and the behaviour is documented as allowed and

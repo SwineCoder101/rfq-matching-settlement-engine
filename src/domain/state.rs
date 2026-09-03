@@ -31,6 +31,8 @@ pub enum RequestState {
     Open,
     Presented,
     Locked,
+    /// The oracle reported `Yes` or `No`; escrow is held until the dispute window closes.
+    Reported,
     Disputed,
     Settled,
     Unwound,

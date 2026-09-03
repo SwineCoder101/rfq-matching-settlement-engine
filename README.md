@@ -22,8 +22,7 @@ cargo run                     # serve on 127.0.0.1:3000 (override with RFQ_ADDR)
 | `src/mock/` | in-memory `MockLedger` and `MockClock` |
 | `src/api.rs` | Axum router, `x-party-id` extractor, bodies, error mapping |
 | `src/worker.rs` | periodic `Tick` to the engine |
-| `tests/` | HTTP-level scenarios over a frozen clock; `common/` is the harness |
-
+| `tests/` | HTTP-level scenarios over a frozen clock: `happy_path.rs`, `settlement.rs`, and `failure_modes/` with one module per request state; `common/` is the harness |
 ## Docs
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): domain, state machines, money flow, seconds-vs-days.
 - [`docs/FAILURE_MODES.md`](docs/FAILURE_MODES.md): every failure or race, its mechanism, and the test that pins it.

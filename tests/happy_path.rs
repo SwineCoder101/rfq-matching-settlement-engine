@@ -7,7 +7,8 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{
-    ACCEPT_WINDOW_SECS, TestVenue, assert_quote_states, bal, fixture, id_of, leg_ids, ts,
+    ACCEPT_WINDOW_SECS, LEG_NOTIONAL, RESPONSE_DEADLINE_SECS, SIDE_LOCK, TestVenue,
+    assert_quote_states, bal, fixture, id_of, leg_ids, ts,
 };
 use uuid::Uuid;
 
@@ -148,9 +149,8 @@ async fn full_lifecycle_two_legs_settles_yes() {
     .await;
 
     // ---- Oracle says Yes: each leg's Yes-buyer receives its notional ---------------------
-    let (status, settled) = v.resolve(&request_id, "yes").await;
-    assert_eq!(status, StatusCode::OK, "{settled}");
-    assert_eq!(settled["state"], "settled");
+    // Yes is only reported; it pays out when the dispute window closes with no filing.
+    v.resolve_final(&request_id, "yes").await;
     v.assert_balances(&[
         ("requester", requester, bal(9_950, 0, 0)), // 8_950 + 1_000 (leg A)
         ("mm1", mm1, bal(10_000, 0, 0)),
@@ -178,6 +178,64 @@ async fn full_lifecycle_two_legs_settles_yes() {
         )
     );
     assert_eq!(v.snapshot(&request_id).await["state"], "settled");
+    v.assert_conserved().await;
+}
+
+/// Three legs, three different makers, one package: escrow per leg names each maker.
+#[tokio::test]
+async fn three_legs_three_makers_settle_yes() {
+    let v = TestVenue::new();
+    let s = v.three_leg_scenario().await;
+    let quotes = v.quote_all_legs(&s).await;
+    for m in s.makers {
+        assert_eq!(v.balances(m).await, bal(0, SIDE_LOCK, 0));
+    }
+    assert_eq!(
+        v.balances(s.requester).await,
+        bal(3 * SIDE_LOCK, 0, 0),
+        "requester stays free while Open"
+    );
+
+    v.advance_to(RESPONSE_DEADLINE_SECS).await;
+    let presented = v.snapshot(&s.request_id).await;
+    assert_eq!(presented["state"], "presented");
+    assert_eq!(common::selections(&presented), quotes);
+
+    let (status, locked) = v.accept(s.requester, &s.request_id).await;
+    assert_eq!(status, StatusCode::OK, "{locked}");
+    assert_eq!(locked["state"], "locked");
+    let escrows = locked["escrows"].as_array().unwrap();
+    assert_eq!(escrows.len(), 3);
+    for (e, (leg_id, maker)) in escrows.iter().zip(s.leg_ids.iter().zip(s.makers)) {
+        assert_eq!(e["leg_id"], *leg_id);
+        assert_eq!(e["yes_buyer"], s.requester.to_string());
+        assert_eq!(e["yes_seller"], maker.to_string());
+        assert_eq!(
+            (
+                e["yes_buyer_amount"].as_u64(),
+                e["yes_seller_amount"].as_u64()
+            ),
+            (Some(SIDE_LOCK), Some(SIDE_LOCK))
+        );
+    }
+    assert_eq!(v.balances(s.requester).await, bal(0, 0, 3 * SIDE_LOCK));
+    for m in s.makers {
+        assert_eq!(v.balances(m).await, bal(0, 0, SIDE_LOCK));
+    }
+    v.assert_conserved().await;
+
+    let settled = v.resolve_final(&s.request_id, "yes").await;
+    assert_eq!(
+        v.balances(s.requester).await,
+        bal(3 * LEG_NOTIONAL, 0, 0),
+        "winner receives n per leg"
+    );
+    for m in s.makers {
+        assert_eq!(v.balances(m).await, bal(0, 0, 0));
+    }
+    for q in &quotes {
+        assert_quote_states(&settled, &[(q, "locked")]);
+    }
     v.assert_conserved().await;
 }
 

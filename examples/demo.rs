@@ -160,7 +160,16 @@ async fn happy_path() {
         .await;
 
     let req = v.engine.resolve(req.id, OracleOutcome::Yes).await.unwrap();
-    println!("  oracle Yes: state {}", state(&req));
+    println!(
+        "  oracle reports Yes: state {} (escrow held for the dispute window)",
+        state(&req)
+    );
+    v.print_balances("after report: nothing moves yet", &parties)
+        .await;
+
+    v.tick_at(30 + 61).await;
+    let req = v.engine.get_request(req.id).await.unwrap();
+    println!("  dispute window closed unfiled: state {}", state(&req));
     v.print_balances("after settlement: Yes-buyer receives n per leg", &parties)
         .await;
 }
