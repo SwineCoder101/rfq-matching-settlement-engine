@@ -16,7 +16,7 @@ cargo run                     # serve on 127.0.0.1:3000 (override with RFQ_ADDR)
 |---|---|
 | `src/domain/` | value types (`ids`, `money`), enums (`state`), aggregates and invariants (`request`) |
 | `src/matching.rs` | the one pure best-quote function |
-| `src/engine.rs` | commands, the request state machine, and the actor that serializes it |
+| `src/engine/` | the state machine split by who triggers it: `requester`, `maker`, `oracle`, `tick`; shared `escrow` helpers; `command`, `error`, and the `actor` that serializes it |
 | `src/ledger.rs` | the `Ledger` port |
 | `src/clock.rs` | the `Clock` port and the system clock |
 | `src/mock/` | in-memory `MockLedger` and `MockClock` |
