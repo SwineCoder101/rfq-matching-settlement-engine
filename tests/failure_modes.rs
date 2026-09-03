@@ -974,7 +974,6 @@ async fn fm_response_deadline_in_past_rejected() {
 /// REVIEW #1. A response deadline centuries out is not a request the venue can honour: it
 /// must be refused at the door, with nothing stored.
 #[tokio::test]
-#[ignore = "REVIEW #1: fix pending"]
 async fn fm_response_deadline_beyond_horizon_rejected() {
     let v = TestVenue::new();
     let requester = Uuid::new_v4();
@@ -991,14 +990,14 @@ async fn fm_response_deadline_beyond_horizon_rejected() {
         StatusCode::BAD_REQUEST,
         "a deadline centuries out must be rejected: {body}"
     );
+    assert_eq!(body["code"], "deadline_beyond_horizon");
     assert!(body.get("id").is_none(), "nothing stored: {body}");
     v.assert_conserved().await;
 }
 
-/// REVIEW #1. Admitting a request whose deadline sits near the end of representable time
-/// must not stop the venue from serving everyone else afterwards.
+/// REVIEW #1. A deadline near the end of representable time is refused at the door, and the
+/// venue keeps serving everyone else afterwards.
 #[tokio::test]
-#[ignore = "REVIEW #1: fix pending"]
 async fn fm_far_future_deadline_cannot_kill_engine() {
     let v = TestVenue::new();
     let (requester, maker) = (Uuid::new_v4(), Uuid::new_v4());
@@ -1007,37 +1006,17 @@ async fn fm_far_future_deadline_cannot_kill_engine() {
 
     // Less headroom below MAX_UTC than one accept window.
     let near_max = DateTime::<Utc>::MAX_UTC - Duration::seconds(10);
-    let (status, created) = v
+    let (status, body) = v
         .open_request(requester, json!([leg("buy_yes", LEG_NOTIONAL)]), near_max)
         .await;
-    assert_eq!(
-        status,
-        StatusCode::CREATED,
-        "admission is not what this test is about: {created}"
-    );
-    let request_id = id_of(&created);
-    let leg_id = leg_ids(&created).remove(0);
-
-    // Whatever the venue decides about this quote, it must keep running afterwards.
-    let (quote_status, quote_body) = v
-        .quote(
-            maker,
-            &request_id,
-            &leg_id,
-            LEG_PRICE_BPS,
-            LEG_NOTIONAL,
-            near_max,
-        )
-        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "deadline_beyond_horizon");
+    assert!(body.get("id").is_none(), "nothing stored: {body}");
 
     // Venue still answers: an unrelated party can credit and open a request.
     let bystander = Uuid::new_v4();
     let (status, body) = v.credit(bystander, SIDE_LOCK).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "venue stopped answering after the quote returned {quote_status} {quote_body}: {body}"
-    );
+    assert_eq!(status, StatusCode::OK, "venue stopped answering: {body}");
     let (status, body) = v
         .open_request(
             bystander,
@@ -1050,6 +1029,12 @@ async fn fm_far_future_deadline_cannot_kill_engine() {
         StatusCode::CREATED,
         "venue stopped answering: {body}"
     );
+    assert_eq!(
+        v.balances(requester).await,
+        bal(SIDE_LOCK, 0, 0),
+        "nothing reserved"
+    );
+    assert_eq!(v.balances(maker).await, bal(SIDE_LOCK, 0, 0));
     assert_eq!(v.balances(bystander).await, bal(SIDE_LOCK, 0, 0));
     v.assert_conserved().await;
 }

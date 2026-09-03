@@ -15,7 +15,7 @@ Judgment calls the brief left open, one per line, as *assumption → consequence
 - Fill is atomic per request: a quote must cover the whole leg (`size >= notional`) and every leg must match → no partial fills; one unmatched leg fails the request and releases everything.
 - Money is `u64` minor units in one currency; Yes-buyer lock is floored, Yes-seller takes the remainder → escrow sums to the notional exactly; overflow panics rather than wraps.
 - Prices are Yes prices in basis points, `1..=9_999` → `buy_no` at `p` is `sell_yes` at `1 - p`; 0% and 100% are not trades.
-- Deadlines are client-supplied absolute UTC timestamps, checked only against the venue clock → clock skew is the client's problem; there is no maximum horizon.
+- Deadlines are client-supplied absolute UTC timestamps checked once, at open, against the venue clock: in the future, within `max_response_horizon` (365 days by default), and with `deadline + accept_window` representable → clock skew is the client's problem, maker collateral cannot be reserved for years, and nothing admitted can overflow later deadline arithmetic.
 - `Tick` carries the worker's `now`; the accept window starts at the tick that presents, not at the response deadline → a late worker extends the window, so matching requires quotes to outlive `now + accept_window`.
 - Boundaries: accept is allowed at exactly `accept_deadline`; a quote whose `expires_at == now` is expired; the response deadline instant itself presents.
 - Ties on price break on engine-assigned submit order, never on timestamps → deterministic winner regardless of clock resolution.

@@ -103,6 +103,9 @@ impl From<EngineError> for ErrorResponse {
                 "quote_expires_before_accept_window",
             ),
             EngineError::DeadlineInPast => (StatusCode::BAD_REQUEST, "deadline_in_past"),
+            EngineError::DeadlineBeyondHorizon => {
+                (StatusCode::BAD_REQUEST, "deadline_beyond_horizon")
+            }
             EngineError::EmptyLegs => (StatusCode::BAD_REQUEST, "empty_legs"),
             EngineError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "engine_unavailable"),
         };
@@ -379,6 +382,7 @@ mod tests {
             EngineError::QuoteTooSmall,
             EngineError::QuoteExpiresBeforeAcceptWindow,
             EngineError::DeadlineInPast,
+            EngineError::DeadlineBeyondHorizon,
             EngineError::EmptyLegs,
         ] {
             assert_eq!(status(e.clone()), StatusCode::BAD_REQUEST, "{e:?}");

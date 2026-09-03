@@ -29,6 +29,7 @@ The engine actor serialises every mutation; the ledger is reserve (quote-scoped)
 | P8 | Unknown request, leg, or quote id | — | 404, no side effects | `fm_unknown_ids_are_404` |
 | P9 | Price 0 or 100 %, zero notional, empty legs, blank contract | Untradeable leg | Parsed into newtypes at the boundary → 400 | `fm_invalid_body_rejected` |
 | P10 | Response deadline in the past | Request that can never present | `response_deadline ≤ now` → 400 | `fm_response_deadline_in_past_rejected` |
+| P11 | Response deadline beyond the venue horizon, or so far out that `deadline + accept_window` is not representable | Maker collateral reserved for years; a deadline sum that panics the actor and turns every endpoint into 503 | Both checked at open: `deadline ≤ now + max_response_horizon` (365 days by default) and `deadline + accept_window` representable → 400 `deadline_beyond_horizon`, nothing stored | `fm_response_deadline_beyond_horizon_rejected`, `fm_far_future_deadline_cannot_kill_engine` |
 | R1 | Oracle says Invalid | 50/50 split or stuck escrow | `refund()` returns each side its own chunk → Unwound, terminal | `fm_resolve_invalid_unwinds_refunds_each_side` |
 | R2 | Oracle disputes, then decides | Payout during dispute | Disputed keeps escrow and counts as escrowed; later Yes/No pays out → Settled | `fm_disputed_then_yes_pays_out` |
 | R3 | Resolve before escrow exists | Payout from nothing | Only Locked/Disputed resolve → 409 | `fm_resolve_before_locked_is_409` |

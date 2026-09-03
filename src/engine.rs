@@ -27,12 +27,16 @@ pub type SharedClock = Arc<dyn Clock + Send + Sync>;
 pub struct EngineConfig {
     /// How long the requester has to accept once a package is presented.
     pub accept_window: Duration,
+    /// How far past the venue clock a `response_deadline` may be. Bounds how long maker
+    /// collateral can sit reserved and keeps every later deadline sum representable.
+    pub max_response_horizon: Duration,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             accept_window: Duration::seconds(60),
+            max_response_horizon: Duration::days(365),
         }
     }
 }
@@ -65,6 +69,8 @@ pub enum EngineError {
     },
     #[error("deadline is in the past")]
     DeadlineInPast,
+    #[error("deadline is beyond the venue's response horizon")]
+    DeadlineBeyondHorizon,
     #[error("a request must have at least one leg")]
     EmptyLegs,
     #[error("engine is not running")]
@@ -266,6 +272,17 @@ impl Engine {
         let now = self.clock.now();
         if response_deadline <= now {
             return Err(EngineError::DeadlineInPast);
+        }
+        // Admission is the one place deadline arithmetic is checked. A stored request's
+        // deadline is within the horizon and `deadline + accept_window` is representable, so
+        // the plain additions in `submit_quote` and `tick` cannot overflow.
+        let horizon = now.checked_add_signed(self.config.max_response_horizon);
+        let within_horizon = horizon.is_some_and(|h| response_deadline <= h);
+        let summable = response_deadline
+            .checked_add_signed(self.config.accept_window)
+            .is_some();
+        if !within_horizon || !summable {
+            return Err(EngineError::DeadlineBeyondHorizon);
         }
         let request = RfqRequest::open(RequestId::new(), requester, legs, response_deadline, now)?;
         self.requests.insert(request.id, request.clone());

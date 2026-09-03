@@ -100,9 +100,47 @@ money-moving scenario in these two files, not only in `failure_modes.rs`.
 
 ---
 
+## Change set 5
+
+**Message:** `fix(engine): bound response deadlines at admission [REVIEW #1]`
+
+**Colour:** turns both REVIEW #1 tests GREEN; default suite green, only X1 still ignored.
+
+**Files:** `src/engine.rs`, `src/api.rs`, `tests/common/mod.rs`, `examples/demo.rs`,
+`tests/failure_modes.rs`, `docs/FAILURE_MODES.md` (row P11), `ASSUMPTIONS.md`, this file.
+
+**The defect:** `submit_quote` computed `response_deadline + accept_window` with chrono's
+plain `+`, which panics on overflow. The panic unwound the actor task, so every later
+command failed to send and the API answered 503 until restart. Admission had let the
+deadline through because its only check was "in the future".
+
+**What it does:** adds `EngineConfig::max_response_horizon` (default 365 days) and
+`EngineError::DeadlineBeyondHorizon` → 400 `deadline_beyond_horizon`. `SubmitRequest`
+now requires the deadline to be within the horizon and `deadline + accept_window` to be
+representable, both via `checked_add_signed`. The later plain additions in `submit_quote`
+and `tick` only ever see admitted values. The two REVIEW #1 tests drop their `#[ignore]`;
+the second is reworded to assert refusal at the door and that the venue keeps answering,
+because with a horizon a near-`MAX_UTC` deadline can no longer be admitted.
+
+**Assumptions behind the fix:**
+1. A year is an acceptable ceiling on how long maker collateral may sit reserved for one
+   request. It is configuration, not a constant in the engine.
+2. Validating once at admission is preferable to checked arithmetic at every later use:
+   a stored request is guaranteed safe for the two sums the state machine performs on
+   its deadline, and one guard is easier to defend than several.
+3. The representability check stays even though the default horizon makes it
+   unreachable, because the horizon is configurable and the failure it prevents is a
+   venue-wide halt.
+4. An error returned from the engine is always safe; only a panic can stop the actor.
+   The fix therefore turns a panic into a returned `EngineError`, consistent with every
+   other refusal.
+
+**Verify:** `cargo test` (all green, 1 ignored), then
+`cargo test --test failure_modes fm_far_future fm_response_deadline_beyond_horizon`.
+
 ## Not in this plan
 
-- X1 (`fm_self_quote_rejected`): the red test already exists and stays `#[ignore]`d; no
-  second test was written.
-- No `src/` change, no doc change. FAILURE_MODES rows for the four new tests arrive with
-  the fix commits, once each test's colour is final.
+- X1 (`fm_self_quote_rejected`): the red test already exists and stays `#[ignore]`d until
+  its own fix step.
+- FAILURE_MODES rows for change sets 2 and 3 (A12, R4) still to be added with a fix or
+  doc commit of your choosing.

@@ -116,6 +116,7 @@ impl TestVenue {
             clock.clone(),
             EngineConfig {
                 accept_window: Duration::seconds(ACCEPT_WINDOW_SECS),
+                ..EngineConfig::default()
             },
         );
         let (engine, _actor) = spawn_engine(engine);

@@ -34,6 +34,7 @@ impl Venue {
             clock.clone(),
             EngineConfig {
                 accept_window: ACCEPT_WINDOW,
+                ..EngineConfig::default()
             },
         );
         let (engine, _actor) = spawn_engine(engine);
