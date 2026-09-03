@@ -3,8 +3,8 @@
   "requester": "{{requester}}",
   "state": "open",
   "legs": [
-    { "id": "{{leg_a}}", "contract": "A", "description": "A resolves Yes by 2026-12-31", "side": "buy_yes",  "notional": 1000 },
-    { "id": "{{leg_b}}", "contract": "B", "description": "B resolves Yes by 2026-12-31", "side": "sell_yes", "notional": 2000 }
+    { "id": "{{leg_a}}", "contract": "A", "description": "Settles Yes if BTC/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No.", "side": "buy_yes",  "notional": 1000 },
+    { "id": "{{leg_b}}", "contract": "B", "description": "Settles Yes if ETH/USD on Coinbase is above 5000.00 at 2026-12-31T00:00:00Z; otherwise No.", "side": "sell_yes", "notional": 2000 }
   ],
   "quotes": [],
   "escrows": [],

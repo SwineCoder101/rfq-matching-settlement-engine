@@ -412,14 +412,14 @@ mod tests {
     #[test]
     fn leg_body_parses_into_domain_leg() {
         let body: LegBody = serde_json::from_str(
-            r#"{"contract":"BTC-100K","description":"BTC closes above $100k on 2026-12-31","side":"buy_yes","notional":1000}"#,
+            r#"{"contract":"BTC-100K","description":"Settles Yes if BTC/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No.","side":"buy_yes","notional":1000}"#,
         )
         .unwrap();
         let leg = Leg::try_from(body).unwrap();
         assert_eq!(leg.contract.as_str(), "BTC-100K");
         assert_eq!(
             leg.description.as_str(),
-            "BTC closes above $100k on 2026-12-31"
+            "Settles Yes if BTC/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No."
         );
         assert_eq!(leg.side, LegSide::BuyYes);
         assert_eq!(leg.notional, Amount::new(1_000));

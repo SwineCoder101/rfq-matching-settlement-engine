@@ -69,7 +69,7 @@ pub fn ts(t: DateTime<Utc>) -> String {
 
 /// One leg for `open_request`.
 pub fn leg(side: &str, notional: u64) -> Value {
-    json!({ "contract": format!("{side}-{notional}"), "description": format!("{side} {notional}"), "side": side, "notional": notional })
+    json!({ "contract": format!("{side}-{notional}"), "description": format!("Settles Yes if index {side}-{notional} closes above 100.00 per the venue's published source at 2026-12-31T00:00:00Z; otherwise No."), "side": side, "notional": notional })
 }
 
 // ---------------------------------------------------------------------------------------------

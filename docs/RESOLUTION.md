@@ -1,12 +1,14 @@
 # Resolution
 
-How escrow unlocks once a request is `Locked`, and what happens when the oracle is disputed, late, or the contract wording turns out to be ambiguous. Rows R1–R3 in `docs/FAILURE_MODES.md` pin this.
+How escrow unlocks once a request is `Locked`, and what happens when the oracle is disputed, late, or reports that the contract cannot be resolved as written. Rows R1–R3 in `docs/FAILURE_MODES.md` pin this. The contract-text assumption this rests on is stated in `ASSUMPTIONS.md`.
 
 ## What is locked
 
 By `Locked`, reservations are gone: accept converted every selected quote's reservation into escrow in one `lock_batch` and released every loser. Each leg holds two ledger handles, one per poster: the Yes-buyer's `p * n` (floored) and the Yes-seller's `n - p * n`. They sum to exactly `n`, so a leg's pool is its notional. A multi-leg request holds one pool per leg; one `Resolve` acts on all of them with the same outcome.
 
 ## Unlock mechanics
+
+<img src="img/quote_lifecycle_maker_view.png" alt="Quote lifecycle, market maker view" width="560">
 
 `POST /v1/oracle/resolve { request_id, outcome }` runs on the engine actor, serialized with every other command. The request must be `Locked` or `Disputed`; anything else is `409` with no ledger call.
 
@@ -34,9 +36,11 @@ The intended policy, **not implemented**:
 
 Both would be `EngineConfig` fields next to `accept_window`, applied inside `Engine::tick` against a timestamp recorded when the request became `Locked`. `RfqRequest` does not record that instant yet; adding it is the first step.
 
-## Ambiguous wording
+## Contract text and `invalid`
 
-The engine never reads contract text: `ContractId` and `ContractDescription` are opaque. Whether wording is ambiguous is the oracle operator's judgment, expressed as `invalid`, which unwinds immediately. Deliberately it is not a 50/50 split (that would transfer money on a contract that was never valid) and not a dispute (ambiguity is final, so it ends the request). `invalid` from `Disputed` behaves the same.
+Contract text is never something the venue interprets or adjudicates. A leg's `ContractDescription` must be a complete resolution rule: a measurable condition, the data source, the UTC instant it is read, and the `No` branch (`ASSUMPTIONS.md`, "contract descriptions are complete resolution rules"). The engine stores it verbatim, validates only that it is non-blank and at most 1000 characters, and treats `ContractId` and `ContractDescription` as opaque. Unclear text is the requester's cost at the time of writing, not a case the resolution design handles.
+
+`invalid` therefore means one thing: the contract cannot be resolved as written, because the source no longer exists, the event was cancelled, or the reading is permanently unavailable. It unwinds immediately and each poster gets its own chunk back. Deliberately it is not a 50/50 split, which would transfer money on a contract that will never settle, and not a dispute, which is a contested but obtainable reading and keeps the request alive. `invalid` from `Disputed` behaves the same.
 
 ## Invariants
 

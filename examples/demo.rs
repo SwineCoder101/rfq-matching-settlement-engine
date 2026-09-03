@@ -74,7 +74,10 @@ impl Venue {
 fn leg(contract: &str, side: LegSide, notional: u64) -> Leg {
     Leg::new(
         ContractId::new(contract).unwrap(),
-        ContractDescription::new(format!("{contract} resolves Yes")).unwrap(),
+        ContractDescription::new(format!(
+            "Settles Yes if {contract}/USD on Coinbase is above 100000.00 at 2026-12-31T00:00:00Z; otherwise No."
+        ))
+        .unwrap(),
         side,
         Amount::new(notional),
     )

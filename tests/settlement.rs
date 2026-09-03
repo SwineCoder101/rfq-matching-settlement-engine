@@ -64,7 +64,7 @@ async fn settles(#[case] legs: &[LegSpec], #[case] outcome: &str, #[case] reques
         .iter()
         .enumerate()
         .map(|(i, (side, notional, _))| {
-            json!({ "contract": format!("C{i}"), "description": format!("C{i} resolves"), "side": side, "notional": notional })
+            json!({ "contract": format!("C{i}"), "description": format!("Settles Yes if index C{i} closes above 100.00 per the venue's published source at 2026-12-31T00:00:00Z; otherwise No."), "side": side, "notional": notional })
         })
         .collect();
     let created = v

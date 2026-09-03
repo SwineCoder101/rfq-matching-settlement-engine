@@ -64,8 +64,8 @@ impl ContractId {
     }
 }
 
-/// Human-readable statement of what the contract resolves on. Carried for participants; the
-/// engine never interprets it.
+/// The contract's complete resolution rule: measurable condition, data source, UTC instant,
+/// and the `No` branch (see `ASSUMPTIONS.md`). Stored verbatim; the engine never interprets it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct ContractDescription(String);

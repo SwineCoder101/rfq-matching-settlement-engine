@@ -4,6 +4,7 @@ Judgment calls the brief left open, one per line, as *assumption → consequence
 
 - Identity is the `x-party-id` header, trusted as given → no authentication; the only authorization is ownership (accept/reject your own request, cancel your own quote).
 - `POST /v1/oracle/resolve` is ungated → any caller can settle a `Locked` request; the oracle is a trusted mocked input, gating it is out of scope.
+- Contract descriptions are complete resolution rules written by the requester (measurable condition, data source, UTC instant, `No` branch) → the venue stores them verbatim, checks only non-blank and ≤ 1000 characters, and never interprets them; unclear text is the requester's cost, not a resolution case, and `invalid` means unresolvable as written.
 - One outcome resolves every leg of a request → legs on different contracts in one request settle together; per-leg resolution does not exist.
 - Yes and No pay the winner the full notional; Invalid refunds each poster its own chunk; Disputed holds → no 50/50 split, no partial payout, no interest.
 - `Locked` and `Disputed` have no timer → escrow is held until an outcome arrives; the timeout policy is designed in `docs/RESOLUTION.md` but not built.

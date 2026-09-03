@@ -8,21 +8,26 @@ Pricing is not this system's problem. Capital is: every intermediate state holds
 
 ```mermaid
 flowchart TB
-    Request["RfqRequest"]
-    Leg["Leg"]
-    Quote["Quote"]
-    Escrow["Escrow"]
-    Ledger["LedgerAccount"]
+    Request["RfqRequest<br/>aggregate root"]
+    Leg["Leg<br/>contract, side, notional"]
+    Quote["Quote<br/>price, size, expiry"]
+    Escrow["Escrow<br/>p·n + (1−p)·n = n"]
+    Ledger["LedgerAccount<br/>free / reserved / escrowed"]
 
     Request -->|"1 to N"| Leg
     Leg -->|"0 to N live quotes"| Quote
-    Request -->|"0 or 1 package after present"| Quote
-    Request -->|"N escrows only after accept"| Escrow
-    Quote -->|"reserves"| Ledger
-    Escrow -->|"locks"| Ledger
+    Request -->|"0 or 1 package, after present"| Quote
+    Request -->|"N escrows, only after accept"| Escrow
+    Quote -->|"reserves maker collateral"| Ledger
+    Escrow -->|"locks both sides"| Ledger
+
+    classDef inflight fill:#dbeafe,stroke:#1d4ed8,color:#0f172a;
+    classDef money fill:#fef3c7,stroke:#b45309,color:#0f172a;
+    class Request,Leg inflight;
+    class Quote,Escrow,Ledger money;
 ```
 
-- **Leg**: one binary contract (opaque id and description), the requester's side, a notional. Buying No at `1 - p` is selling Yes at `p`, so prices, collateral, and escrow are always in Yes terms: `buy_yes` / `sell_no` make the requester the Yes-buyer, `sell_yes` / `buy_no` make the maker the Yes-buyer.
+- **Leg**: one binary contract (an opaque id and a description that must be a complete resolution rule, see `ASSUMPTIONS.md`), the requester's side, a notional. Buying No at `1 - p` is selling Yes at `p`, so prices, collateral, and escrow are always in Yes terms: `buy_yes` / `sell_no` make the requester the Yes-buyer, `sell_yes` / `buy_no` make the maker the Yes-buyer.
 - **Quote**: maker price, size, expiry. Reserves maker collateral while `Live` or `Selected`.
 - **Escrow**: exists only after accept. Yes-buyer locked `p * n`, Yes-seller `(1 - p) * n`, total `n`.
 
@@ -30,29 +35,7 @@ Not a CLOB: no order book, no order types, no partial fills. Fill is atomic per 
 
 ## Components
 
-```mermaid
-flowchart TB
-    subgraph clients [Clients]
-        Requester
-        MarketMaker
-        Oracle
-    end
-    subgraph http [Axum]
-        Router --> PartyExtractor["x-party-id extractor"] --> Handlers
-    end
-    subgraph runtime [Tokio]
-        ExpiryWorker["Expiry worker"]
-        EngineActor["Engine actor"]
-    end
-    Requester --> Router
-    MarketMaker --> Router
-    Oracle --> Router
-    Handlers -->|"command plus oneshot"| EngineActor
-    ExpiryWorker -->|"Tick now"| EngineActor
-    EngineActor --> Matching["select_best (pure)"]
-    EngineActor --> Ledger["Ledger (in-memory)"]
-    EngineActor --> Clock
-```
+<img src="img/components.png" alt="System components" width="480">
 
 The engine actor owns all requests and applies commands one at a time, so accept, cancel, and expiry cannot interleave. Matching is pure: eligible quotes are `Live`, `size >= notional`, unexpired, and `expires_at >= accept_deadline`; long-Yes legs take the lowest Yes price, short-Yes legs the highest; ties break on engine submit order.
 
@@ -68,6 +51,10 @@ Identity is the `x-party-id` header. Authorization: accept or reject only your o
 
 ## Happy path
 
+<img src="img/happy_path_states.png" alt="Happy path states" width="440">
+
+The same path with the ledger calls at each step:
+
 ```mermaid
 sequenceDiagram
     participant Req as Requester
@@ -76,15 +63,29 @@ sequenceDiagram
     participant Led as Ledger
     participant Tick as ExpiryWorker
 
-    Req->>Eng: SubmitRequest (Open)
-    MM->>Eng: SubmitQuote
-    Eng->>Led: reserve MM collateral
-    Tick->>Eng: Tick past response_deadline
-    Eng->>Eng: select best per leg (Open to Presented)
-    Req->>Eng: Accept
-    Eng->>Led: lock_batch all legs, release losers (Presented to Locked)
-    Req->>Eng: Resolve Yes
-    Eng->>Led: payout n per leg to Yes-buyer (Locked to Settled)
+    rect rgb(219, 234, 254)
+        Note over Req,Led: Open: requester stays free, makers reserve
+        Req->>Eng: SubmitRequest
+        Eng-->>Req: 201 Open
+        MM->>Eng: SubmitQuote
+        Eng->>Led: reserve MM collateral
+        Eng-->>MM: 201 Live
+    end
+    rect rgb(254, 243, 199)
+        Note over Eng,Tick: Response deadline: best quote per leg, no money moves
+        Tick->>Eng: Tick past response_deadline
+        Eng->>Eng: select_best per leg (Open to Presented)
+    end
+    rect rgb(220, 252, 231)
+        Note over Req,Led: Accept: one atomic lock_batch, losers released
+        Req->>Eng: Accept
+        Eng->>Led: lock_batch all legs
+        Eng->>Led: release losing quotes
+        Eng-->>Req: 200 Locked
+        Req->>Eng: Resolve Yes
+        Eng->>Led: payout n per leg to the Yes-buyer
+        Eng-->>Req: 200 Settled
+    end
 ```
 
 ## Multi-leg abort: leg 2 of 3 unmatched
@@ -96,12 +97,17 @@ sequenceDiagram
     participant Led as Ledger
     participant Tick as ExpiryWorker
 
-    MM->>Eng: quotes on leg1 and leg3
-    Eng->>Led: reserve both
-    Tick->>Eng: Tick at response_deadline
-    Eng->>Eng: leg2 has no eligible quote
-    Eng->>Led: release leg1 and leg3 (Open to Failed)
-    Note over Led: lock_batch never called
+    rect rgb(219, 234, 254)
+        MM->>Eng: quotes on leg1 and leg3
+        Eng->>Led: reserve both
+        Note over Eng: provisional match is a reservation, not a lock
+    end
+    rect rgb(254, 226, 226)
+        Tick->>Eng: Tick at response_deadline
+        Eng->>Eng: leg2 has no eligible quote
+        Eng->>Led: release leg1 and leg3 (Open to Failed)
+        Note over Led: lock_batch never called
+    end
 ```
 
 A provisional match is a reservation, not a lock. Escrow is request-atomic: there is no half-locked state.
@@ -112,12 +118,26 @@ Two buckets, never mixed: **reserved** is reversible and quote-scoped, posted at
 
 ```mermaid
 flowchart LR
+    Free["Free"]
+    Reserved["Reserved<br/>quote-scoped, reversible"]
+    Escrowed["Escrowed<br/>request-scoped, one batch"]
+
     Free -->|"MM submit_quote"| Reserved
-    Reserved -->|"cancel, lose, expire, or Failed"| Free
+    Reserved -->|"cancel, lose, expire, Failed"| Free
     Reserved -->|"accept: MM side"| Escrowed
     Free -->|"accept: requester side"| Escrowed
     Escrowed -->|"Yes or No: payout to winner"| Free
     Escrowed -->|"Invalid: refund each poster"| Free
+
+    classDef free fill:#dcfce7,stroke:#15803d,color:#0f172a;
+    classDef held fill:#fef3c7,stroke:#b45309,color:#0f172a;
+    classDef locked fill:#fecaca,stroke:#b91c1c,color:#0f172a;
+    class Free free;
+    class Reserved held;
+    class Escrowed locked;
+    linkStyle 0,2,3 stroke:#b45309,stroke-width:2px;
+    linkStyle 1,5 stroke:#b91c1c,stroke-width:2px;
+    linkStyle 4 stroke:#15803d,stroke-width:2px;
 ```
 
 - **Open**: requester stays free (price unknown). Every live quote has maker collateral reserved.
@@ -145,20 +165,24 @@ stateDiagram-v2
     Failed --> [*]
     Settled --> [*]
     Unwound --> [*]
+
+    classDef inflight fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
+    classDef held fill:#fef3c7,stroke:#b45309,color:#0f172a
+    classDef done fill:#dcfce7,stroke:#15803d,color:#0f172a
+    classDef undone fill:#fee2e2,stroke:#b91c1c,color:#0f172a
+    class Open,Presented inflight
+    class Locked,Disputed held
+    class Settled done
+    class Failed,Unwound undone
 ```
 
 `Settled`, `Unwound`, and `Failed` are terminal: any further accept, reject, or resolve is `409`. `Locked` and `Disputed` have no timer today; see `docs/RESOLUTION.md`.
 
 ### Quote lifecycle
 
-```mermaid
-stateDiagram-v2
-    [*] --> Live: SubmitQuote reserves collateral
-    Live --> Released: cancel, expiry, lose at accept, or request Failed
-    Live --> Selected: request Presented
-    Selected --> Locked: Accept
-    Selected --> Released: Reject, window expiry, or lock_batch refused
-```
+<img src="img/quote_lifecycle_maker_view.png" alt="Quote lifecycle, market maker view" width="560">
+
+`Live` leaves for `Released` on cancel, own expiry while the request is `Open`, losing at accept, or the request failing. `Selected` leaves for `Released` on reject, accept-window expiry, or a refused `lock_batch`. A quote's own expiry is not honoured once the request is `Presented`.
 
 ## Quote lifetime: seconds vs days
 
